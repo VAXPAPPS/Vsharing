@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=إرسال عبر Vsharing
+Name[en]=Send via Vsharing
+Comment=مشاركة الملفات بشكل فوري مع الأجهزة القريبة
+Icon=document-send-symbolic
+Exec=vsharing-ui %F
+Terminal=false
+Categories=Network;FileTransfer;
+MimeType=application/octet-stream;inode/directory;
+# هذه الإعدادات تجعل التطبيق يظهر في قائمة الـ Right-click في مدراء الملفات (مثل Nautilus/Thunar/Dolphin)
+Actions=Send;
+
+[Desktop Action Send]
+Name=إرسال عبر Vsharing
+Exec=vsharing-ui %F
+Icon=document-send-symbolic

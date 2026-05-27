@@ -1,0 +1,81 @@
+/* تصميم أساسي نظيف وحديث بدون libadwaita */
+
+.vsharing-window {
+    background-color: rgba(0, 0, 0, 0.4);
+    color: #cdd6f4;
+}
+
+.custom-header {
+    background-color: rgba(0, 0, 0, 0.4);
+    padding: 10px 20px;
+    border-bottom: 1px solid #313244;
+}
+
+.header-title {
+    font-weight: bold;
+    font-size: 1.2em;
+    color: #89b4fa;
+}
+
+.flat-btn {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+.flat-btn:hover {
+    background: #313244;
+    border-radius: 50%;
+}
+
+.radar-area {
+    background-color: rgba(0, 0, 0, 0.4);
+    /* يمكن إضافة صورة خلفية شبكية للرادار هنا لاحقاً */
+}
+
+@keyframes ripple {
+    0% { box-shadow: 0 0 0 0 rgba(137, 180, 250, 0.4); }
+    100% { box-shadow: 0 0 0 30px rgba(137, 180, 250, 0); }
+}
+
+.drop-zone {
+    background-color: #313244;
+    border-radius: 100px; /* دائرة */
+    padding: 40px;
+    border: 2px dashed #89b4fa;
+    transition: all 0.3s ease;
+    animation: ripple 2s infinite; /* تأثير النبض أو التموج */
+}
+
+.drop-zone:hover {
+    background-color: #45475a;
+    border-color: #b4befe;
+    transform: scale(1.05);
+}
+
+.device-node {
+    background-color: #1e1e2e;
+    border-radius: 15px;
+    padding: 10px;
+    border: 2px solid #a6e3a1; /* أخضر للإشارة للاتصال */
+    transition: all 0.3s ease;
+    cursor: pointer;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+
+.device-node:hover {
+    transform: scale(1.1) translateY(-5px);
+    background-color: #313244;
+    border-color: #89b4fa;
+}
+
+.device-label {
+    font-size: 0.9em;
+    font-weight: bold;
+    color: #cdd6f4;
+}
+
+.bottom-bar {
+    background-color: rgba(0, 0, 0, 0.4);
+    padding: 10px;
+    border-radius: 10px;
+}

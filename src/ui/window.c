@@ -159,38 +159,90 @@ static void show_qr_dialog(GtkWidget *widget, gpointer window) {
 }
 
 static GtkSwitch *global_clipboard_switch = NULL;
-static char last_phone_text[4096] = {0};
+static char last_pc_copied_text[4096] = {0};
+static char last_phone_received_text[4096] = {0};
 
 static void on_clipboard_text_ready(GObject *source_object, GAsyncResult *res, gpointer user_data) {
     GdkClipboard *clipboard = GDK_CLIPBOARD(source_object);
     GError *error = NULL;
     char *text = gdk_clipboard_read_text_finish(clipboard, res, &error);
     if (text) {
-        if (g_strcmp0(text, last_phone_text) != 0) {
+        // إذا كان هذا النص هو نفس النص الذي استقبلناه للتو من الهاتف، نتجاهله لنمنع الحلقة المفرغة
+        if (g_strcmp0(text, last_phone_received_text) == 0) {
+            g_free(text);
+            return;
+        }
+        
+        if (g_strcmp0(text, last_pc_copied_text) != 0) {
+            g_strlcpy(last_pc_copied_text, text, sizeof(last_pc_copied_text));
             g_file_set_contents("/tmp/vsharing_pc_clipboard.txt", text, -1, NULL);
+            
+            // الأهم: تفريغ ملف الهاتف والذاكرة لكي لا يرتد النص القديم للحاسوب
+            g_file_set_contents("/tmp/vsharing_phone_clipboard.txt", "", -1, NULL);
+            last_phone_received_text[0] = '\0';
+            
             char preview[40] = {0};
             g_strlcpy(preview, text, sizeof(preview));
-            g_print("📋 [مزامنة الحافظة] تم حفظ نص للحاسوب ليأخذه الهاتف: %s...\n", preview);
+            g_print("📋 [مزامنة الحافظة] تم نسخ نص من الحاسوب وجاهز للهاتف: %s...\n", preview);
         }
         g_free(text);
     } else if (error) {
+        // تجاهل أخطاء عدم توافق النص (تحدث في Wayland عند نسخ صور أو ملفات)
         g_error_free(error);
     }
 }
 
-static void on_phone_clip_changed(GFileMonitor *monitor, GFile *file, GFile *other_file, GFileMonitorEvent event_type, gpointer user_data) {
-    if (event_type == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT || event_type == G_FILE_MONITOR_EVENT_CREATED) {
-        char *text = NULL;
-        if (g_file_get_contents("/tmp/vsharing_phone_clipboard.txt", &text, NULL, NULL)) {
-            if (text && strlen(text) > 0 && global_clipboard_switch && gtk_switch_get_active(global_clipboard_switch)) {
-                g_strlcpy(last_phone_text, text, sizeof(last_phone_text));
+static void on_clipboard_switch_state_set(GObject *gobject, GParamSpec *pspec, gpointer user_data) {
+    if (gtk_switch_get_active(GTK_SWITCH(gobject))) {
+        // بمجرد التفعيل، نقرأ الحافظة فوراً لتكون جاهزة
+        GdkClipboard *cb = gdk_display_get_clipboard(gdk_display_get_default());
+        gdk_clipboard_read_text_async(cb, NULL, (GAsyncReadyCallback)on_clipboard_text_ready, NULL);
+    }
+}
+
+static void set_clipboard_forcefully(const char *text) {
+    gint std_in;
+    GError *err = NULL;
+    gchar *argv_wl[] = {"wl-copy", NULL};
+    if (g_spawn_async_with_pipes(NULL, argv_wl, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &std_in, NULL, NULL, &err)) {
+        if (write(std_in, text, strlen(text)) == -1) {}
+        close(std_in);
+        return;
+    }
+    if (err) { g_error_free(err); err = NULL; }
+    
+    gchar *argv_xclip[] = {"xclip", "-selection", "clipboard", NULL};
+    if (g_spawn_async_with_pipes(NULL, argv_xclip, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &std_in, NULL, NULL, &err)) {
+        if (write(std_in, text, strlen(text)) == -1) {}
+        close(std_in);
+        return;
+    }
+    if (err) g_error_free(err);
+}
+
+static gboolean poll_phone_clipboard(gpointer data) {
+    char *text = NULL;
+    if (g_file_get_contents("/tmp/vsharing_phone_clipboard.txt", &text, NULL, NULL)) {
+        if (text && strlen(text) > 0 && global_clipboard_switch && gtk_switch_get_active(global_clipboard_switch)) {
+            if (g_strcmp0(text, last_phone_received_text) != 0) {
+                g_strlcpy(last_phone_received_text, text, sizeof(last_phone_received_text));
+                
+                // مسح ذاكرة الحاسوب لكي يتم تسجيل أي نسخ قادم حتى لو كان مطابقاً
+                last_pc_copied_text[0] = '\0';
+                
+                // الطريقة الأساسية عبر GTK
                 GdkClipboard *cb = gdk_display_get_clipboard(gdk_display_get_default());
                 gdk_clipboard_set_text(cb, text);
-                g_print("📥 [مزامنة الحافظة] تم استقبال نص من الهاتف ووضعه بالحافظة!\n");
+                
+                // الطريقة الإجبارية التي تتجاوز قيود الأمان في Wayland/X11
+                set_clipboard_forcefully(text);
+                
+                g_print("📥 [مزامنة الحافظة] تم استقبال نص جديد من الهاتف ووضعه بالحافظة!\n");
             }
-            g_free(text);
         }
+        g_free(text);
     }
+    return G_SOURCE_CONTINUE;
 }
 
 static void on_clipboard_changed(GdkClipboard *clipboard, gpointer user_data) {
@@ -304,12 +356,10 @@ vsharing_window_create (GtkApplication *app)
     // ربط مستمع لتغيرات الحافظة
     GdkClipboard *clipboard = gdk_display_get_clipboard(gdk_display_get_default());
     g_signal_connect(clipboard, "changed", G_CALLBACK(on_clipboard_changed), NULL);
+    g_signal_connect(clipboard_switch, "notify::active", G_CALLBACK(on_clipboard_switch_state_set), NULL);
     
-    // ربط مراقب لملف نصوص الهاتف
-    GFile *clip_file = g_file_new_for_path("/tmp/vsharing_phone_clipboard.txt");
-    GFileMonitor *mon = g_file_monitor(clip_file, G_FILE_MONITOR_NONE, NULL, NULL);
-    g_signal_connect(mon, "changed", G_CALLBACK(on_phone_clip_changed), NULL);
-    g_object_unref(clip_file);
+    // مراقبة نصوص الهاتف بشكل مستمر (Polling) لتفادي توقف GFileMonitor عند تغيير الـ Inode
+    g_timeout_add_seconds(1, poll_phone_clipboard, NULL);
     
     gtk_box_append (GTK_BOX (bottom_bar), clipboard_switch);
     gtk_box_append (GTK_BOX (bottom_bar), clipboard_label);

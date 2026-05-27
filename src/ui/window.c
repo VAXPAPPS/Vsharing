@@ -7,6 +7,7 @@ static GtkWidget *global_radar_area = NULL;
 static AvahiGLibPoll *ui_glib_poll = NULL;
 static AvahiClient *ui_client = NULL;
 static AvahiServiceBrowser *ui_browser = NULL;
+static GList *discovered_devices = NULL;
 
 static void add_device_to_radar(const char *device_name, int x, int y) {
     if (!global_radar_area) return;
@@ -30,6 +31,12 @@ static void ui_browse_callback(AvahiServiceBrowser *b, AvahiIfIndex interface, A
                                AvahiBrowserEvent event, const char *name, const char *type,
                                const char *domain, AvahiLookupResultFlags flags, void *userdata) {
     if (event == AVAHI_BROWSER_NEW) {
+        // تجنب إضافة نفس الجهاز عدة مرات (بسبب واجهات الشبكة المتعددة)
+        for (GList *l = discovered_devices; l != NULL; l = l->next) {
+            if (g_strcmp0((char*)l->data, name) == 0) return; // الجهاز موجود بالفعل
+        }
+        discovered_devices = g_list_append(discovered_devices, g_strdup(name));
+        
         g_print("📱 UI: ظهر جهاز جديد في الرادار: %s\n", name);
         // وضع الجهاز في إحداثيات عشوائية حول دائرة المركز
         int x = g_random_int_range(50, 650);
@@ -152,19 +159,37 @@ static void show_qr_dialog(GtkWidget *widget, gpointer window) {
 }
 
 static GtkSwitch *global_clipboard_switch = NULL;
+static char last_phone_text[4096] = {0};
 
 static void on_clipboard_text_ready(GObject *source_object, GAsyncResult *res, gpointer user_data) {
     GdkClipboard *clipboard = GDK_CLIPBOARD(source_object);
     GError *error = NULL;
     char *text = gdk_clipboard_read_text_finish(clipboard, res, &error);
     if (text) {
-        // نأخذ مقتطفاً قصيراً للطباعة لتجنب تلويث الطرفية بنصوص طويلة
-        char preview[40] = {0};
-        g_strlcpy(preview, text, sizeof(preview));
-        g_print("📋 [مزامنة الحافظة] تم التقاط نص جديد وسيتم بثه للأجهزة: %s...\n", preview);
+        if (g_strcmp0(text, last_phone_text) != 0) {
+            g_file_set_contents("/tmp/vsharing_pc_clipboard.txt", text, -1, NULL);
+            char preview[40] = {0};
+            g_strlcpy(preview, text, sizeof(preview));
+            g_print("📋 [مزامنة الحافظة] تم حفظ نص للحاسوب ليأخذه الهاتف: %s...\n", preview);
+        }
         g_free(text);
     } else if (error) {
         g_error_free(error);
+    }
+}
+
+static void on_phone_clip_changed(GFileMonitor *monitor, GFile *file, GFile *other_file, GFileMonitorEvent event_type, gpointer user_data) {
+    if (event_type == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT || event_type == G_FILE_MONITOR_EVENT_CREATED) {
+        char *text = NULL;
+        if (g_file_get_contents("/tmp/vsharing_phone_clipboard.txt", &text, NULL, NULL)) {
+            if (text && strlen(text) > 0 && global_clipboard_switch && gtk_switch_get_active(global_clipboard_switch)) {
+                g_strlcpy(last_phone_text, text, sizeof(last_phone_text));
+                GdkClipboard *cb = gdk_display_get_clipboard(gdk_display_get_default());
+                gdk_clipboard_set_text(cb, text);
+                g_print("📥 [مزامنة الحافظة] تم استقبال نص من الهاتف ووضعه بالحافظة!\n");
+            }
+            g_free(text);
+        }
     }
 }
 
@@ -280,6 +305,12 @@ vsharing_window_create (GtkApplication *app)
     GdkClipboard *clipboard = gdk_display_get_clipboard(gdk_display_get_default());
     g_signal_connect(clipboard, "changed", G_CALLBACK(on_clipboard_changed), NULL);
     
+    // ربط مراقب لملف نصوص الهاتف
+    GFile *clip_file = g_file_new_for_path("/tmp/vsharing_phone_clipboard.txt");
+    GFileMonitor *mon = g_file_monitor(clip_file, G_FILE_MONITOR_NONE, NULL, NULL);
+    g_signal_connect(mon, "changed", G_CALLBACK(on_phone_clip_changed), NULL);
+    g_object_unref(clip_file);
+    
     gtk_box_append (GTK_BOX (bottom_bar), clipboard_switch);
     gtk_box_append (GTK_BOX (bottom_bar), clipboard_label);
     
@@ -287,10 +318,6 @@ vsharing_window_create (GtkApplication *app)
 
     // تشغيل البحث عن الأجهزة في الرادار
     start_ui_discovery();
-    
-    // إضافة بعض الأجهزة الوهمية (Mock) لتجربة الواجهة إذا لم يكن هناك أجهزة أخرى على الشبكة
-    add_device_to_radar("iPhone الخاص بي", 150, 100);
-    add_device_to_radar("MacBook Pro", 550, 300);
 
     gtk_window_present (GTK_WINDOW (window));
 }

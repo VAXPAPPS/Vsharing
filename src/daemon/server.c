@@ -93,7 +93,12 @@ static const char *HTML_PAGE =
 "<label class='btn' for='fileInput'>إرسال ملف للحاسوب</label><input type='file' id='fileInput'>"
 "<div id='status'></div>"
 "<a href='#' class='btn btn-recv' id='recvBtn'>⬇️ استلام ملف من الحاسوب</a>"
-"</div><script>"
+"<div style='background:#1e1e2e;padding:15px;border-radius:15px;margin-top:20px;'>"
+"<h3 style='margin-top:0;'>مزامنة النصوص 📋</h3>"
+"<textarea id='clipText' placeholder='اكتب أو انسخ نصاً هنا...' style='width:90%;height:80px;border-radius:10px;padding:10px;background:#313244;color:#cdd6f4;border:1px solid #45475a;margin-bottom:10px;'></textarea><br>"
+"<button class='btn' style='padding:10px;width:45%;font-size:1em;' onclick='sendText()'>إرسال للحاسوب</button> "
+"<button class='btn' style='padding:10px;width:45%;font-size:1em;background:#f9e2af;color:#11111b;' onclick='copyText()'>جلب من الحاسوب</button>"
+"</div></div><script>"
 "function sendFile(){"
 "let file=document.getElementById('fileInput').files[0];if(!file)return;"
 "document.getElementById('status').innerText='⏳ جاري الإرسال...';"
@@ -110,6 +115,8 @@ static const char *HTML_PAGE =
 "xhr.onprogress=function(e){if(e.lengthComputable){let percent=Math.round((e.loaded/e.total)*100);fetch('/progress?p='+percent+'&name='+encodeURIComponent(fname)+'&type=down');document.getElementById('status').innerText='⏳ الاستلام: '+percent+'%';}};"
 "xhr.onload=function(){if(xhr.status===200){let a=document.createElement('a');a.href=window.URL.createObjectURL(xhr.response);a.download=fname;a.click();document.getElementById('status').innerText='✅ اكتمل الاستلام!';fetch('/progress?p=100&name='+encodeURIComponent(fname)+'&type=down');}};"
 "xhr.send();}"
+"function sendText(){let txt=document.getElementById('clipText').value;if(!txt)return;fetch('/clip_write',{method:'POST',body:txt}).then(r=>{if(r.ok)alert('تم إرسال النص للحاسوب!');});}"
+"function copyText(){fetch('/clip_read').then(r=>r.text()).then(t=>{if(t){document.getElementById('clipText').value=t;if(navigator.clipboard)navigator.clipboard.writeText(t);alert('تم جلب النص بنجاح!');}else{alert('حافظة الحاسوب فارغة!');}});}"
 "setInterval(()=>{fetch('/check').then(r=>r.text()).then(t=>{"
 "let btn=document.getElementById('recvBtn');if(t!=='none'){btn.style.display='inline-block';btn.innerText='⬇️ استلام '+t;btn.onclick=function(){downloadFile(t);};}else{btn.style.display='none';}"
 "});},2000);</script></body></html>";
@@ -199,6 +206,25 @@ static void server_callback(SoupServer *server, SoupServerMessage *msg, const ch
             g_free(save_path);
             g_bytes_unref(body_bytes);
             
+            soup_server_message_set_status(msg, SOUP_STATUS_OK, NULL);
+        }
+    } else if (g_strcmp0(path, "/clip_read") == 0) {
+        char *text = NULL;
+        SoupMessageBody *body = soup_server_message_get_response_body(msg);
+        if (g_file_get_contents("/tmp/vsharing_pc_clipboard.txt", &text, NULL, NULL)) {
+            soup_message_body_append(body, SOUP_MEMORY_TAKE, text, strlen(text));
+        } else {
+            soup_message_body_append(body, SOUP_MEMORY_STATIC, "", 0);
+        }
+        soup_server_message_set_status(msg, SOUP_STATUS_OK, NULL);
+    } else if (g_strcmp0(path, "/clip_write") == 0) {
+        if (soup_server_message_get_method(msg) == SOUP_METHOD_POST) {
+            SoupMessageBody *req_body = soup_server_message_get_request_body(msg);
+            GBytes *body_bytes = soup_message_body_flatten(req_body);
+            gsize size;
+            gconstpointer data = g_bytes_get_data(body_bytes, &size);
+            g_file_set_contents("/tmp/vsharing_phone_clipboard.txt", data, size, NULL);
+            g_bytes_unref(body_bytes);
             soup_server_message_set_status(msg, SOUP_STATUS_OK, NULL);
         }
     } else {

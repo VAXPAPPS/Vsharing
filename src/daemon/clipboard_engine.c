@@ -6,9 +6,18 @@
  */
 
 #include "clipboard_engine.h"
+#include <gio/gio.h>
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+
+/* إعلانات أمامية لدوال الـ callback */
+static void on_pc_clip_file_changed(GFileMonitor *monitor, GFile *file,
+                                     GFile *other_file, GFileMonitorEvent ev_type,
+                                     gpointer user_data);
+static void on_phone_clip_file_changed(GFileMonitor *monitor, GFile *file,
+                                        GFile *other_file, GFileMonitorEvent ev_type,
+                                        gpointer user_data);
 
 #define VSHARING_PC_CLIP_FILE    "/tmp/vsharing_pc_clipboard.txt"
 #define VSHARING_PHONE_CLIP_FILE "/tmp/vsharing_phone_clipboard.txt"

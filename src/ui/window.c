@@ -2,6 +2,9 @@
 #include <avahi-client/client.h>
 #include <avahi-client/lookup.h>
 #include <avahi-glib/glib-watch.h>
+#include <gio/gio.h>
+#include <string.h>
+
 
 static GtkWidget *global_radar_area = NULL;
 static AvahiGLibPoll *ui_glib_poll = NULL;
@@ -160,6 +163,153 @@ static void show_qr_dialog(GtkWidget *widget, gpointer window) {
 
 static GtkSwitch *global_clipboard_switch = NULL;
 static char last_clipboard_text[4096] = {0};
+
+/* ─────────────────────────────────────────────
+ * مركز الإشعارات — المرحلة 2
+ * ───────────────────────────────────────────── */
+static GtkWidget *g_notif_list     = NULL;
+static GtkWidget *g_notif_badge    = NULL;
+static guint      g_notif_ui_count = 0;
+
+typedef struct {
+    uint64_t  notif_id;
+    char      app_name[64];
+    char      title[128];
+    char      body[512];
+    uint8_t   category;
+    GtkWidget *row_widget;
+} UiNotifItem;
+
+static UiNotifItem g_ui_notifs[64];
+static guint       g_ui_notif_raw_count = 0;
+
+static const char *CAT_ICONS[] = {
+    "message-new-instant-symbolic",
+    "call-start-symbolic",
+    "appointment-soon-symbolic",
+    "media-playback-start-symbolic",
+    "dialog-information-symbolic",
+};
+
+static void update_notif_badge(void) {
+    if (!g_notif_badge) return;
+    if (g_notif_ui_count == 0) {
+        gtk_widget_set_visible(g_notif_badge, FALSE);
+    } else {
+        char cnt[8];
+        snprintf(cnt, sizeof(cnt), "%u", g_notif_ui_count);
+        gtk_label_set_text(GTK_LABEL(g_notif_badge), cnt);
+        gtk_widget_set_visible(g_notif_badge, TRUE);
+    }
+}
+
+static void on_dismiss_notif_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    uint64_t notif_id = (uint64_t)(gintptr)user_data;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%" G_GUINT64_FORMAT, notif_id);
+    g_file_set_contents("/tmp/vsharing_dismiss_notif.txt", buf, -1, NULL);
+    /* حذف من القائمة المرئية */
+    for (guint i = 0; i < g_ui_notif_raw_count; i++) {
+        if (g_ui_notifs[i].notif_id == notif_id) {
+            if (g_notif_list && g_ui_notifs[i].row_widget)
+                gtk_list_box_remove(GTK_LIST_BOX(g_notif_list),
+                                    gtk_widget_get_parent(g_ui_notifs[i].row_widget));
+            if (i < g_ui_notif_raw_count - 1)
+                g_ui_notifs[i] = g_ui_notifs[g_ui_notif_raw_count - 1];
+            g_ui_notif_raw_count--;
+            if (g_notif_ui_count > 0) g_notif_ui_count--;
+            update_notif_badge();
+            return;
+        }
+    }
+}
+
+static void ui_add_notif(uint64_t notif_id, const char *app_name,
+                          const char *title, const char *body, uint8_t category)
+{
+    if (!g_notif_list) return;
+    if (g_ui_notif_raw_count >= 64) return;
+    for (guint i = 0; i < g_ui_notif_raw_count; i++)
+        if (g_ui_notifs[i].notif_id == notif_id) return; /* مكرر */
+
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_add_css_class(row, "notif-row");
+    gtk_widget_set_margin_start(row, 8);
+    gtk_widget_set_margin_end(row, 8);
+    gtk_widget_set_margin_top(row, 4);
+    gtk_widget_set_margin_bottom(row, 4);
+
+    uint8_t cat = (category < 5) ? category : 4;
+    GtkWidget *icon = gtk_image_new_from_icon_name(CAT_ICONS[cat]);
+    gtk_image_set_pixel_size(GTK_IMAGE(icon), 20);
+    gtk_widget_add_css_class(icon, "notif-icon");
+
+    GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_hexpand(text_box, TRUE);
+
+    char hdr[200];
+    snprintf(hdr, sizeof(hdr), "<b>%s</b>  <small>%s</small>", title, app_name);
+    GtkWidget *lbl_title = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(lbl_title), hdr);
+    gtk_label_set_xalign(GTK_LABEL(lbl_title), 0.0f);
+    gtk_label_set_ellipsize(GTK_LABEL(lbl_title), PANGO_ELLIPSIZE_END);
+    gtk_widget_add_css_class(lbl_title, "notif-title");
+
+    GtkWidget *lbl_body = gtk_label_new(body);
+    gtk_label_set_xalign(GTK_LABEL(lbl_body), 0.0f);
+    gtk_label_set_ellipsize(GTK_LABEL(lbl_body), PANGO_ELLIPSIZE_END);
+    gtk_label_set_wrap(GTK_LABEL(lbl_body), TRUE);
+    gtk_label_set_lines(GTK_LABEL(lbl_body), 2);
+    gtk_widget_add_css_class(lbl_body, "notif-body");
+
+    gtk_box_append(GTK_BOX(text_box), lbl_title);
+    gtk_box_append(GTK_BOX(text_box), lbl_body);
+
+    GtkWidget *close_btn = gtk_button_new_from_icon_name("window-close-symbolic");
+    gtk_widget_add_css_class(close_btn, "flat");
+    gtk_widget_add_css_class(close_btn, "notif-close-btn");
+    g_signal_connect(close_btn, "clicked",
+                     G_CALLBACK(on_dismiss_notif_clicked),
+                     (gpointer)(gintptr)notif_id);
+
+    gtk_box_append(GTK_BOX(row), icon);
+    gtk_box_append(GTK_BOX(row), text_box);
+    gtk_box_append(GTK_BOX(row), close_btn);
+
+    gtk_list_box_prepend(GTK_LIST_BOX(g_notif_list), row);
+
+    UiNotifItem *item = &g_ui_notifs[g_ui_notif_raw_count++];
+    item->notif_id   = notif_id;
+    item->category   = category;
+    item->row_widget = row;
+    g_strlcpy(item->app_name, app_name ? app_name : "", 64);
+    g_strlcpy(item->title,    title    ? title    : "", 128);
+    g_strlcpy(item->body,     body     ? body     : "", 512);
+
+    g_notif_ui_count++;
+    update_notif_badge();
+}
+
+/* الاستطلاع الدوري: يقرأ ملف مؤقت يكتبه الـ daemon عند استقبال إشعار جديد.
+ * التنسيق: notif_id|app_name|title|body|category */
+static gboolean poll_incoming_notifs(gpointer data) {
+    (void)data;
+    char *content = NULL;
+    if (!g_file_get_contents("/tmp/vsharing_notif_incoming.txt", &content, NULL, NULL))
+        return G_SOURCE_CONTINUE;
+    g_strchomp(content);
+    char **parts = g_strsplit(content, "|", 5);
+    if (g_strv_length(parts) >= 5) {
+        uint64_t nid = (uint64_t)g_ascii_strtoull(parts[0], NULL, 10);
+        uint8_t  cat = (uint8_t)atoi(parts[4]);
+        ui_add_notif(nid, parts[1], parts[2], parts[3], cat);
+        g_remove("/tmp/vsharing_notif_incoming.txt");
+    }
+    g_strfreev(parts);
+    g_free(content);
+    return G_SOURCE_CONTINUE;
+}
 
 static void on_clipboard_text_ready(GObject *source_object, GAsyncResult *res, gpointer user_data) {
     GdkClipboard *clipboard = GDK_CLIPBOARD(source_object);
@@ -323,15 +473,71 @@ vsharing_window_create (GtkApplication *app)
     gtk_box_append (GTK_BOX (drop_zone), drop_label);
 
     // وضع الدائرة في منتصف الرادار
-    // سنقوم بتحديد موقعها باستخدام Fixed لاحقاً ديناميكياً، ولكن للتبسيط نضعها في المنتصف
     gtk_fixed_put (GTK_FIXED (radar_area), drop_zone, 300, 200);
 
-    // تفعيل استقبال الملفات (Drag & Drop) على دائرة الإفلات
+    // تفعيل استقبال الملفات (Drag & Drop)
     GtkDropTarget *drop_target = gtk_drop_target_new (GDK_TYPE_FILE_LIST, GDK_ACTION_COPY);
     g_signal_connect (drop_target, "drop", G_CALLBACK (on_drop), NULL);
     gtk_widget_add_controller (drop_zone, GTK_EVENT_CONTROLLER (drop_target));
 
-    // شريط سفلي (للحالة ومزامنة الحافظة)
+    /* ── لوحة الإشعارات (المرحلة 2) ── */
+    GtkWidget *notif_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(notif_panel, "notif-panel");
+    gtk_widget_set_margin_start(notif_panel, 8);
+    gtk_widget_set_margin_end(notif_panel, 8);
+    gtk_widget_set_margin_bottom(notif_panel, 4);
+
+    /* شريط عنوان اللوحة */
+    GtkWidget *notif_header = gtk_center_box_new();
+    gtk_widget_add_css_class(notif_header, "notif-panel-header");
+
+    GtkWidget *notif_title_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *notif_icon_hdr  = gtk_image_new_from_icon_name("notification-symbolic");
+    GtkWidget *notif_title_lbl = gtk_label_new("إشعارات الهاتف");
+    gtk_widget_add_css_class(notif_title_lbl, "notif-panel-title");
+
+    g_notif_badge = gtk_label_new("0");
+    gtk_widget_add_css_class(g_notif_badge, "notif-badge");
+    gtk_widget_set_visible(g_notif_badge, FALSE);
+
+    gtk_box_append(GTK_BOX(notif_title_box), notif_icon_hdr);
+    gtk_box_append(GTK_BOX(notif_title_box), notif_title_lbl);
+    gtk_box_append(GTK_BOX(notif_title_box), g_notif_badge);
+    gtk_center_box_set_start_widget(GTK_CENTER_BOX(notif_header), notif_title_box);
+
+    GtkWidget *clear_btn = gtk_button_new_with_label("حذف الكل");
+    gtk_widget_add_css_class(clear_btn, "flat");
+    gtk_widget_add_css_class(clear_btn, "notif-clear-btn");
+    gtk_center_box_set_end_widget(GTK_CENTER_BOX(notif_header), clear_btn);
+
+    /* قائمة الإشعارات */
+    GtkWidget *notif_scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(notif_scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(notif_scroll, -1, 150);
+
+    g_notif_list = gtk_list_box_new();
+    gtk_widget_add_css_class(g_notif_list, "notif-list");
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(g_notif_list), GTK_SELECTION_NONE);
+    gtk_list_box_set_show_separators(GTK_LIST_BOX(g_notif_list), TRUE);
+
+    GtkWidget *empty_lbl = gtk_label_new("لا توجد إشعارات");
+    gtk_widget_add_css_class(empty_lbl, "notif-empty");
+    gtk_list_box_set_placeholder(GTK_LIST_BOX(g_notif_list), empty_lbl);
+
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(notif_scroll), g_notif_list);
+    gtk_box_append(GTK_BOX(notif_panel), notif_header);
+    gtk_box_append(GTK_BOX(notif_panel), notif_scroll);
+
+    g_signal_connect_swapped(clear_btn, "clicked",
+                             G_CALLBACK(gtk_list_box_remove_all), g_notif_list);
+
+    /* استطلاع دوري كل 500ms لإشعارات الهاتف الواردة */
+    g_timeout_add(500, poll_incoming_notifs, NULL);
+
+    gtk_box_append(GTK_BOX(main_box), notif_panel);
+
+    // شريط سفلي (مزامنة الحافظة)
     GtkWidget *bottom_bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
     gtk_widget_add_css_class (bottom_bar, "bottom-bar");
     gtk_widget_set_margin_start (bottom_bar, 10);
@@ -341,22 +547,16 @@ vsharing_window_create (GtkApplication *app)
     GtkWidget *clipboard_switch = gtk_switch_new ();
     global_clipboard_switch = GTK_SWITCH(clipboard_switch);
     GtkWidget *clipboard_label = gtk_label_new ("مزامنة الحافظة (Clipboard Sync)");
-    
-    // ربط مستمع لتغيرات الحافظة
+
     GdkClipboard *clipboard = gdk_display_get_clipboard(gdk_display_get_default());
     g_signal_connect(clipboard, "changed", G_CALLBACK(on_clipboard_changed), NULL);
     g_signal_connect(clipboard_switch, "notify::active", G_CALLBACK(on_clipboard_switch_state_set), NULL);
-    
-    // مراقبة نصوص الهاتف بشكل مستمر (Polling) لتفادي توقف GFileMonitor عند تغيير الـ Inode
     g_timeout_add_seconds(1, poll_phone_clipboard, NULL);
-    
+
     gtk_box_append (GTK_BOX (bottom_bar), clipboard_switch);
     gtk_box_append (GTK_BOX (bottom_bar), clipboard_label);
-    
     gtk_box_append (GTK_BOX (main_box), bottom_bar);
 
-    // تشغيل البحث عن الأجهزة في الرادار
     start_ui_discovery();
-
     gtk_window_present (GTK_WINDOW (window));
 }

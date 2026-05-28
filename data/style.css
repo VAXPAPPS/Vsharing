@@ -79,3 +79,76 @@
     padding: 10px;
     border-radius: 10px;
 }
+
+/* ── مركز الإشعارات (المرحلة 2) ── */
+.notif-panel {
+    background-color: rgba(17, 17, 27, 0.85);
+    border: 1px solid #313244;
+    border-radius: 12px;
+    margin: 0 4px 4px 4px;
+}
+
+.notif-panel-header {
+    padding: 8px 12px;
+    border-bottom: 1px solid #313244;
+}
+
+.notif-panel-title {
+    font-weight: bold;
+    font-size: 0.95em;
+    color: #89b4fa;
+}
+
+.notif-badge {
+    background-color: #f38ba8;
+    color: #1e1e2e;
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: 0.75em;
+    font-weight: bold;
+    min-width: 18px;
+}
+
+.notif-clear-btn {
+    font-size: 0.8em;
+    color: #6c7086;
+}
+.notif-clear-btn:hover { color: #f38ba8; }
+
+.notif-list {
+    background-color: transparent;
+}
+
+.notif-list row {
+    background-color: transparent;
+    border-radius: 8px;
+}
+.notif-list row:hover { background-color: rgba(49, 50, 68, 0.5); }
+
+.notif-empty {
+    color: #6c7086;
+    font-size: 0.9em;
+    padding: 20px;
+}
+
+.notif-row { transition: background 0.2s; }
+
+.notif-icon { color: #89b4fa; opacity: 0.9; }
+
+.notif-title {
+    font-size: 0.88em;
+    color: #cdd6f4;
+}
+
+.notif-body {
+    font-size: 0.82em;
+    color: #9399b2;
+}
+
+.notif-close-btn {
+    color: #585b70;
+    padding: 2px;
+    min-width: 24px;
+    min-height: 24px;
+}
+.notif-close-btn:hover { color: #f38ba8; }

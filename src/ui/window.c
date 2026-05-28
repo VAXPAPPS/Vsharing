@@ -159,35 +159,27 @@ static void show_qr_dialog(GtkWidget *widget, gpointer window) {
 }
 
 static GtkSwitch *global_clipboard_switch = NULL;
-static char last_pc_copied_text[4096] = {0};
-static char last_phone_received_text[4096] = {0};
+static char last_clipboard_text[4096] = {0};
 
 static void on_clipboard_text_ready(GObject *source_object, GAsyncResult *res, gpointer user_data) {
     GdkClipboard *clipboard = GDK_CLIPBOARD(source_object);
     GError *error = NULL;
     char *text = gdk_clipboard_read_text_finish(clipboard, res, &error);
     if (text) {
-        // إذا كان هذا النص هو نفس النص الذي استقبلناه للتو من الهاتف، نتجاهله لنمنع الحلقة المفرغة
-        if (g_strcmp0(text, last_phone_received_text) == 0) {
+        if (g_strcmp0(text, last_clipboard_text) == 0) {
             g_free(text);
             return;
         }
         
-        if (g_strcmp0(text, last_pc_copied_text) != 0) {
-            g_strlcpy(last_pc_copied_text, text, sizeof(last_pc_copied_text));
-            g_file_set_contents("/tmp/vsharing_pc_clipboard.txt", text, -1, NULL);
-            
-            // الأهم: تفريغ ملف الهاتف والذاكرة لكي لا يرتد النص القديم للحاسوب
-            g_file_set_contents("/tmp/vsharing_phone_clipboard.txt", "", -1, NULL);
-            last_phone_received_text[0] = '\0';
-            
-            char preview[40] = {0};
-            g_strlcpy(preview, text, sizeof(preview));
-            g_print("📋 [مزامنة الحافظة] تم نسخ نص من الحاسوب وجاهز للهاتف: %s...\n", preview);
-        }
+        g_strlcpy(last_clipboard_text, text, sizeof(last_clipboard_text));
+        g_file_set_contents("/tmp/vsharing_pc_clipboard.txt", text, -1, NULL);
+        
+        char preview[40] = {0};
+        g_strlcpy(preview, text, sizeof(preview));
+        g_print("📋 [مزامنة الحافظة] تم نسخ نص من الحاسوب وجاهز للهاتف: %s...\n", preview);
+        
         g_free(text);
     } else if (error) {
-        // تجاهل أخطاء عدم توافق النص (تحدث في Wayland عند نسخ صور أو ملفات)
         g_error_free(error);
     }
 }
@@ -224,11 +216,8 @@ static gboolean poll_phone_clipboard(gpointer data) {
     char *text = NULL;
     if (g_file_get_contents("/tmp/vsharing_phone_clipboard.txt", &text, NULL, NULL)) {
         if (text && strlen(text) > 0 && global_clipboard_switch && gtk_switch_get_active(global_clipboard_switch)) {
-            if (g_strcmp0(text, last_phone_received_text) != 0) {
-                g_strlcpy(last_phone_received_text, text, sizeof(last_phone_received_text));
-                
-                // مسح ذاكرة الحاسوب لكي يتم تسجيل أي نسخ قادم حتى لو كان مطابقاً
-                last_pc_copied_text[0] = '\0';
+            if (g_strcmp0(text, last_clipboard_text) != 0) {
+                g_strlcpy(last_clipboard_text, text, sizeof(last_clipboard_text));
                 
                 // الطريقة الأساسية عبر GTK
                 GdkClipboard *cb = gdk_display_get_clipboard(gdk_display_get_default());

@@ -116,12 +116,111 @@ static const char *HTML_PAGE =
 "xhr.onprogress=function(e){if(e.lengthComputable){let percent=Math.round((e.loaded/e.total)*100);fetch('/progress?p='+percent+'&name='+encodeURIComponent(fname)+'&type=down');document.getElementById('status').innerText='⏳ الاستلام: '+percent+'%';}};"
 "xhr.onload=function(){if(xhr.status===200){let a=document.createElement('a');a.href=window.URL.createObjectURL(xhr.response);a.download=fname;a.click();document.getElementById('status').innerText='✅ اكتمل الاستلام!';fetch('/progress?p=100&name='+encodeURIComponent(fname)+'&type=down');}};"
 "xhr.send();}"
-"let lastPhoneText=''; function autoSendText(){let txt=document.getElementById('phoneClip').value;if(txt!==lastPhoneText){lastPhoneText=txt;fetch('/clip_write',{method:'POST',body:txt});}}"
-"let lastPcText=''; setInterval(()=>{fetch('/clip_read').then(r=>r.text()).then(t=>{if(t&&t!==lastPcText){lastPcText=t;document.getElementById('pcClip').value=t;if(navigator.clipboard){navigator.clipboard.writeText(t).catch(e=>{});}}});},1000);"
-"setInterval(()=>{fetch('/check').then(r=>r.text()).then(t=>{"
-"let btn=document.getElementById('recvBtn');if(t!=='none'){btn.style.display='inline-block';btn.innerText='⬇️ استلام '+t;btn.onclick=function(){downloadFile(t);};}else{btn.style.display='none';}"
-"});},2000);</script></body></html>";
+"let lastPhoneText=''; let lastPcText='';"
+"let ws = new WebSocket('ws://' + location.host + '/ws');"
+"ws.onmessage = function(e) {"
+"    if (e.data.startsWith('clip:')) {"
+"        let text = e.data.substring(5);"
+"        if (text !== lastPcText) {"
+"            lastPcText = text; document.getElementById('pcClip').value = text;"
+"            if (navigator.clipboard) navigator.clipboard.writeText(text).catch(err=>{});"
+"        }"
+"    } else if (e.data.startsWith('file:')) {"
+"        let fname = e.data.substring(5); let btn = document.getElementById('recvBtn');"
+"        if (fname !== 'none') { btn.style.display = 'inline-block'; btn.innerText = '⬇️ استلام ' + fname; btn.onclick = function() { downloadFile(fname); }; }"
+"        else { btn.style.display = 'none'; }"
+"    }"
+"};"
+"function autoSendText() {"
+"    let txt = document.getElementById('phoneClip').value;"
+"    if (txt !== lastPhoneText) {"
+"        lastPhoneText = txt; if (ws.readyState === 1) { ws.send('clip:' + txt); }"
+"    }"
+"}</script></body></html>";
 
+static GPtrArray *ws_clients = NULL;
+static char last_pc_clip[4096] = {0};
+static char last_file[4096] = {0};
+
+static void ws_broadcast(const char *msg) {
+    if (!ws_clients) return;
+    for (guint i = 0; i < ws_clients->len; i++) {
+        SoupWebsocketConnection *conn = g_ptr_array_index(ws_clients, i);
+        if (soup_websocket_connection_get_state(conn) == SOUP_WEBSOCKET_STATE_OPEN) {
+            soup_websocket_connection_send_text(conn, msg);
+        }
+    }
+}
+
+static void on_ws_message(SoupWebsocketConnection *conn, gint type, GBytes *message, gpointer user_data) {
+    if (type == SOUP_WEBSOCKET_DATA_TEXT) {
+        gsize size;
+        const gchar *data = g_bytes_get_data(message, &size);
+        char *str = g_strndup(data, size);
+        if (g_str_has_prefix(str, "clip:")) {
+            g_file_set_contents("/tmp/vsharing_phone_clipboard.txt", str + 5, -1, NULL);
+        }
+        g_free(str);
+    }
+}
+
+static void on_ws_closed(SoupWebsocketConnection *conn, gpointer user_data) {
+    g_ptr_array_remove(ws_clients, conn);
+    g_object_unref(conn);
+}
+
+static void on_websocket_connection(SoupServer *server, SoupServerMessage *msg, const char *path, SoupWebsocketConnection *connection, gpointer user_data) {
+    if (!ws_clients) ws_clients = g_ptr_array_new();
+    g_object_ref(connection);
+    g_ptr_array_add(ws_clients, connection);
+    
+    g_signal_connect(connection, "message", G_CALLBACK(on_ws_message), NULL);
+    g_signal_connect(connection, "closed", G_CALLBACK(on_ws_closed), NULL);
+    
+    // مزامنة مبدئية عند الاتصال
+    if (last_pc_clip[0] != '\0') {
+        char *resp = g_strdup_printf("clip:%s", last_pc_clip);
+        soup_websocket_connection_send_text(connection, resp);
+        g_free(resp);
+    }
+    if (last_file[0] != '\0') {
+        char *resp = g_strdup_printf("file:%s", last_file);
+        soup_websocket_connection_send_text(connection, resp);
+        g_free(resp);
+    }
+}
+
+static gboolean poll_tmp_files(gpointer data) {
+    char *text = NULL;
+    if (g_file_get_contents("/tmp/vsharing_pc_clipboard.txt", &text, NULL, NULL)) {
+        if (g_strcmp0(text, last_pc_clip) != 0) {
+            g_strlcpy(last_pc_clip, text, sizeof(last_pc_clip));
+            char *msg = g_strdup_printf("clip:%s", text);
+            ws_broadcast(msg);
+            g_free(msg);
+        }
+        g_free(text);
+    }
+    
+    char *file_path = NULL;
+    if (g_file_get_contents("/tmp/vsharing_current_file.txt", &file_path, NULL, NULL)) {
+        char *basename = g_path_get_basename(file_path);
+        if (g_strcmp0(basename, last_file) != 0) {
+            g_strlcpy(last_file, basename, sizeof(last_file));
+            char *msg = g_strdup_printf("file:%s", basename);
+            ws_broadcast(msg);
+            g_free(msg);
+        }
+        g_free(basename);
+        g_free(file_path);
+    } else {
+        if (last_file[0] != '\0') {
+            last_file[0] = '\0';
+            ws_broadcast("file:none");
+        }
+    }
+    return G_SOURCE_CONTINUE;
+}
 static void server_callback(SoupServer *server, SoupServerMessage *msg, const char *path, GHashTable *query, gpointer user_data) {
     if (g_strcmp0(path, "/") == 0) {
         if (soup_server_message_get_method(msg) == SOUP_METHOD_GET) {
@@ -129,18 +228,6 @@ static void server_callback(SoupServer *server, SoupServerMessage *msg, const ch
             soup_message_body_append(body, SOUP_MEMORY_STATIC, HTML_PAGE, strlen(HTML_PAGE));
             soup_server_message_set_status(msg, SOUP_STATUS_OK, NULL);
         }
-    } else if (g_strcmp0(path, "/check") == 0) {
-        char *file_path = NULL;
-        SoupMessageBody *body = soup_server_message_get_response_body(msg);
-        if (g_file_get_contents("/tmp/vsharing_current_file.txt", &file_path, NULL, NULL)) {
-            char *basename = g_path_get_basename(file_path);
-            soup_message_body_append(body, SOUP_MEMORY_COPY, basename, strlen(basename));
-            g_free(basename);
-            g_free(file_path);
-        } else {
-            soup_message_body_append(body, SOUP_MEMORY_STATIC, "none", 4);
-        }
-        soup_server_message_set_status(msg, SOUP_STATUS_OK, NULL);
     } else if (g_strcmp0(path, "/progress") == 0) {
         GUri *uri = soup_server_message_get_uri(msg);
         const char *query_str = g_uri_get_query(uri);
@@ -209,25 +296,6 @@ static void server_callback(SoupServer *server, SoupServerMessage *msg, const ch
             
             soup_server_message_set_status(msg, SOUP_STATUS_OK, NULL);
         }
-    } else if (g_strcmp0(path, "/clip_read") == 0) {
-        char *text = NULL;
-        SoupMessageBody *body = soup_server_message_get_response_body(msg);
-        if (g_file_get_contents("/tmp/vsharing_pc_clipboard.txt", &text, NULL, NULL)) {
-            soup_message_body_append(body, SOUP_MEMORY_TAKE, text, strlen(text));
-        } else {
-            soup_message_body_append(body, SOUP_MEMORY_STATIC, "", 0);
-        }
-        soup_server_message_set_status(msg, SOUP_STATUS_OK, NULL);
-    } else if (g_strcmp0(path, "/clip_write") == 0) {
-        if (soup_server_message_get_method(msg) == SOUP_METHOD_POST) {
-            SoupMessageBody *req_body = soup_server_message_get_request_body(msg);
-            GBytes *body_bytes = soup_message_body_flatten(req_body);
-            gsize size;
-            gconstpointer data = g_bytes_get_data(body_bytes, &size);
-            g_file_set_contents("/tmp/vsharing_phone_clipboard.txt", data, size, NULL);
-            g_bytes_unref(body_bytes);
-            soup_server_message_set_status(msg, SOUP_STATUS_OK, NULL);
-        }
     } else {
         soup_server_message_set_status(msg, SOUP_STATUS_NOT_FOUND, NULL);
     }
@@ -238,6 +306,10 @@ void vsharing_server_start(int port) {
     server = soup_server_new(NULL, NULL);
     
     soup_server_add_handler(server, NULL, server_callback, NULL, NULL);
+    soup_server_add_websocket_handler(server, "/ws", NULL, NULL, on_websocket_connection, NULL, NULL);
+    
+    // فحص دوري لنقل المتغيرات إلى قنوات الـ WebSocket
+    g_timeout_add(500, poll_tmp_files, NULL);
     
     if (!soup_server_listen_all(server, port, 0, &error)) {
         g_printerr("⚠️ فشل تشغيل خادم Vsharing Web: %s\n", error->message);

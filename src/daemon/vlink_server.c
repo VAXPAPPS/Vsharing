@@ -1,6 +1,8 @@
 #include "vlink_server.h"
 #include "notification_bridge.h"
 #include "vlink_protocol.h"
+#include "screen_mirror.h"
+#include "input_controller.h"
 #include <libsoup/soup.h>
 #include <stdio.h>
 #include <string.h>
@@ -244,6 +246,80 @@ static void on_ws_message(SoupWebsocketConnection *conn, gint type,
             /* نعيد استخدام SHOW للتحديث (replace_id موجود في السجل) */
             if (hdr.payload_len >= sizeof(VLinkNotifPayload))
                 notif_bridge_show((const VLinkNotifPayload *)payload);
+            break;
+
+        /* ── مشاركة الشاشة ── */
+        case VLINK_SCREEN_START: {
+            /* payload: client_ip (optional) + VLinkScreenConfig */
+            const char *cip = g_clients && g_clients->len > 0
+                              ? "127.0.0.1" /* placeholder */ : "127.0.0.1";
+            int fps     = SCREEN_DEFAULT_FPS;
+            int bitrate = SCREEN_DEFAULT_BITRATE;
+            if (hdr.payload_len >= sizeof(VLinkScreenConfig)) {
+                const VLinkScreenConfig *cfg = (const VLinkScreenConfig *)payload;
+                if (cfg->fps)     fps     = cfg->fps;
+                if (cfg->bitrate) bitrate = (int)cfg->bitrate;
+            }
+            /* استخرج IP العميل من SoupWebsocketConnection */
+            GInetSocketAddress *sa = G_INET_SOCKET_ADDRESS(
+                soup_websocket_connection_get_remote_address(conn));
+            if (sa) {
+                GInetAddress *ia = g_inet_socket_address_get_address(sa);
+                cip = g_inet_address_to_string(ia);
+            }
+            if (!screen_mirror_start(cip, fps, bitrate)) {
+                g_print("[VLink] ❌ screen_mirror_start failed\n");
+            }
+            break;
+        }
+
+        case VLINK_SCREEN_STOP:
+            screen_mirror_stop();
+            break;
+
+        case VLINK_SCREEN_CONFIG:
+            if (hdr.payload_len >= sizeof(VLinkScreenConfig)) {
+                /* إعادة التشغيل بالإعدادات الجديدة */
+                if (screen_mirror_is_running()) {
+                    screen_mirror_stop();
+                    const VLinkScreenConfig *cfg = (const VLinkScreenConfig *)payload;
+                    GInetSocketAddress *sa2 = G_INET_SOCKET_ADDRESS(
+                        soup_websocket_connection_get_remote_address(conn));
+                    const char *ip2 = "127.0.0.1";
+                    if (sa2) ip2 = g_inet_address_to_string(
+                        g_inet_socket_address_get_address(sa2));
+                    screen_mirror_start(ip2, cfg->fps, (int)cfg->bitrate);
+                }
+            }
+            break;
+
+        case VLINK_SCREEN_KEYFRAME:
+            screen_mirror_request_keyframe();
+            break;
+
+        /* ── التحكم عن بُعد (Input) ── */
+        case VLINK_INPUT_TOUCH:
+            if (hdr.payload_len >= sizeof(VLinkTouchEvent)) {
+                const VLinkTouchEvent *ev = (const VLinkTouchEvent *)payload;
+                input_ctrl_inject_touch(ev->x_normalized, ev->y_normalized,
+                                        ev->action, ev->pointer_id, 0, 0);
+            }
+            break;
+
+        case VLINK_INPUT_KEY:
+            if (hdr.payload_len >= sizeof(VLinkKeyEvent)) {
+                const VLinkKeyEvent *ev = (const VLinkKeyEvent *)payload;
+                input_ctrl_inject_key(ev->keycode, ev->action, ev->modifiers);
+            }
+            break;
+
+        case VLINK_INPUT_SCROLL:
+            if (hdr.payload_len >= 8) {
+                int32_t dx, dy;
+                memcpy(&dx, payload,     4);
+                memcpy(&dy, payload + 4, 4);
+                input_ctrl_inject_scroll(dx, dy);
+            }
             break;
 
         /* ── نبضات القلب ── */

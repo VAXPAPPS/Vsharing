@@ -152,3 +152,52 @@
     min-height: 24px;
 }
 .notif-close-btn:hover { color: #f38ba8; }
+
+/* ── مشاركة الشاشة (المرحلة 3) ── */
+.screen-mirror-btn {
+    border-radius: 8px;
+    transition: all 0.2s;
+}
+.screen-mirror-btn:checked {
+    background: rgba(99, 102, 241, 0.3);
+    color: #818cf8;
+}
+
+.mirror-window {
+    background-color: #0d0d1a;
+}
+
+.screen-viewer {
+    background-color: #050510;
+    border-radius: 12px;
+    border: 1px solid #1e2a4a;
+}
+
+.mirror-stop-btn {
+    background: rgba(243, 139, 168, 0.2);
+    color: #f38ba8;
+    border-radius: 8px;
+    padding: 4px 12px;
+    border: 1px solid rgba(243, 139, 168, 0.3);
+}
+.mirror-stop-btn:hover {
+    background: rgba(243, 139, 168, 0.35);
+}
+
+.mirror-kf-btn {
+    background: rgba(137, 180, 250, 0.15);
+    color: #89b4fa;
+    border-radius: 8px;
+    padding: 4px 12px;
+    border: 1px solid rgba(137, 180, 250, 0.25);
+}
+.mirror-kf-btn:hover {
+    background: rgba(137, 180, 250, 0.28);
+}
+
+.mirror-stats {
+    font-size: 0.8em;
+    color: #6c7086;
+    text-align: end;
+}
+

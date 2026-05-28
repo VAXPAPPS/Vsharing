@@ -2,7 +2,7 @@
 ## وثيقة حالة التطوير — دليل الاستكمال في محادثة جديدة
 
 > **آخر تحديث:** 2026-05-28  
-> **الإصدار الحالي:** v2.1.0 (قابل للبناء ✅)  
+> **الإصدار الحالي:** v3.0.0 (قابل للبناء ✅)  
 > **الهدف النهائي:** تحويل Vsharing من تطبيق مشاركة بسيط إلى العصب الرئيسي لنظام Vaxp البيئي
 
 ---
@@ -17,24 +17,26 @@
 ### بنية المشروع الحالية
 ```
 Vsharing/
-├── meson.build              ← نظام البناء (v2.1.0)
-├── DEVELOPMENT_STATUS.md    ← هذا الملف
+├── meson.build              ← نظام البناء (v3.0.0)
+├── DEVELOPMENT_STATUS.md
 ├── data/
-│   ├── style.css            ← ✅ محدَّث (إشعارات)
+│   ├── style.css            ← ✅ محدَّث (إشعارات + شاشة)
 │   └── vsharing-send.desktop
 └── src/
     ├── daemon/
-    │   ├── main.c                ← ✅ محدَّث (v2)
-    │   ├── discovery.{c,h}       ← ✅ موجود (mDNS/Avahi)
-    │   ├── server.{c,h}          ← ⚠️ قديم (مرجع فقط)
-    │   ├── vlink_protocol.{c,h}  ← ✅ موجود
-    │   ├── vlink_server.{c,h}    ← ✅ محدَّث (معالجة NOTIF_*)
-    │   ├── auth_manager.{c,h}    ← ✅ موجود
-    │   ├── clipboard_engine.{c,h}← ✅ موجود
-    │   └── notification_bridge.{c,h} ← ✅ جديد (المرحلة 2)
+    │   ├── main.c
+    │   ├── discovery.{c,h}
+    │   ├── vlink_protocol.{c,h}
+    │   ├── vlink_server.{c,h}    ← ✅ محدَّث (SCREEN + INPUT handlers)
+    │   ├── auth_manager.{c,h}
+    │   ├── clipboard_engine.{c,h}
+    │   ├── notification_bridge.{c,h} ← ✅ (مرحلة 2)
+    │   ├── input_controller.{c,h}    ← ✅ جديد (مرحلة 3)
+    │   └── screen_mirror.{c,h}       ← ✅ جديد (مرحلة 3)
     └── ui/
-        ├── main.c                ← ✅ موجود
-        └── window.{c,h}          ← ✅ محدَّث (مركز الإشعارات)
+        ├── main.c
+        ├── window.{c,h}          ← ✅ محدَّث (زر مشاركة الشاشة)
+        └── screen_viewer.{c,h}   ← ✅ جديد (مرحلة 3)
 ```
 
 ### أوامر البناء
@@ -142,7 +144,7 @@ void notif_bridge_dismiss(uint64_t notif_id);
 
 ---
 
-## ⏳ المرحلة 3 — مشاركة الشاشة والتحكم عن بُعد (لم تبدأ)
+## ✅ المرحلة 3 — مشاركة الشاشة والتحكم عن بُعد (مكتملة 100%)
 
 ### الهدف
 - بث شاشة الهاتف على الحاسوب بتأخير < 50ms

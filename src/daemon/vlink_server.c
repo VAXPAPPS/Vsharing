@@ -150,6 +150,8 @@ static void send_progress_notif(const char *filename, int pct, gboolean is_uploa
 static GPtrArray *g_clients      = NULL;
 static char g_last_pc_clip[8192] = {0};
 static char g_last_file[4096]    = {0};
+static char g_last_client_ip[46] = {0};  /* ← IP آخر جهاز متصل */
+
 
 /* ── بث رسالة نصية لجميع عملاء WebSocket ── */
 static void ws_broadcast(const char *msg) {
@@ -250,9 +252,6 @@ static void on_ws_message(SoupWebsocketConnection *conn, gint type,
 
         /* ── مشاركة الشاشة ── */
         case VLINK_SCREEN_START: {
-            /* payload: client_ip (optional) + VLinkScreenConfig */
-            const char *cip = g_clients && g_clients->len > 0
-                              ? "127.0.0.1" /* placeholder */ : "127.0.0.1";
             int fps     = SCREEN_DEFAULT_FPS;
             int bitrate = SCREEN_DEFAULT_BITRATE;
             if (hdr.payload_len >= sizeof(VLinkScreenConfig)) {
@@ -260,16 +259,9 @@ static void on_ws_message(SoupWebsocketConnection *conn, gint type,
                 if (cfg->fps)     fps     = cfg->fps;
                 if (cfg->bitrate) bitrate = (int)cfg->bitrate;
             }
-            /* استخرج IP العميل من SoupWebsocketConnection */
-            GInetSocketAddress *sa = G_INET_SOCKET_ADDRESS(
-                soup_websocket_connection_get_remote_address(conn));
-            if (sa) {
-                GInetAddress *ia = g_inet_socket_address_get_address(sa);
-                cip = g_inet_address_to_string(ia);
-            }
-            if (!screen_mirror_start(cip, fps, bitrate)) {
+            const char *cip = g_last_client_ip[0] ? g_last_client_ip : "127.0.0.1";
+            if (!screen_mirror_start(cip, fps, bitrate))
                 g_print("[VLink] ❌ screen_mirror_start failed\n");
-            }
             break;
         }
 
@@ -278,18 +270,11 @@ static void on_ws_message(SoupWebsocketConnection *conn, gint type,
             break;
 
         case VLINK_SCREEN_CONFIG:
-            if (hdr.payload_len >= sizeof(VLinkScreenConfig)) {
-                /* إعادة التشغيل بالإعدادات الجديدة */
-                if (screen_mirror_is_running()) {
-                    screen_mirror_stop();
-                    const VLinkScreenConfig *cfg = (const VLinkScreenConfig *)payload;
-                    GInetSocketAddress *sa2 = G_INET_SOCKET_ADDRESS(
-                        soup_websocket_connection_get_remote_address(conn));
-                    const char *ip2 = "127.0.0.1";
-                    if (sa2) ip2 = g_inet_address_to_string(
-                        g_inet_socket_address_get_address(sa2));
-                    screen_mirror_start(ip2, cfg->fps, (int)cfg->bitrate);
-                }
+            if (hdr.payload_len >= sizeof(VLinkScreenConfig) && screen_mirror_is_running()) {
+                const VLinkScreenConfig *cfg = (const VLinkScreenConfig *)payload;
+                screen_mirror_stop();
+                const char *ip2 = g_last_client_ip[0] ? g_last_client_ip : "127.0.0.1";
+                screen_mirror_start(ip2, cfg->fps, (int)cfg->bitrate);
             }
             break;
 
@@ -364,10 +349,22 @@ static void on_ws_closed(SoupWebsocketConnection *conn, gpointer user_data) {
 static void on_ws_connected(SoupServer *srv, SoupServerMessage *msg,
                               const char *path, SoupWebsocketConnection *conn,
                               gpointer user_data) {
-    (void)srv; (void)msg; (void)path; (void)user_data;
+    (void)srv; (void)path; (void)user_data;
     if (!g_clients) g_clients = g_ptr_array_new();
     g_object_ref(conn);
     g_ptr_array_add(g_clients, conn);
+
+    /* حفظ IP العميل */
+    if (msg) {
+        GSocketAddress *sa = soup_server_message_get_remote_address(msg);
+        if (G_IS_INET_SOCKET_ADDRESS(sa)) {
+            GInetAddress *ia = g_inet_socket_address_get_address(
+                G_INET_SOCKET_ADDRESS(sa));
+            char *ip_str = g_inet_address_to_string(ia);
+            g_strlcpy(g_last_client_ip, ip_str, sizeof(g_last_client_ip));
+            g_free(ip_str);
+        }
+    }
     g_signal_connect(conn, "message", G_CALLBACK(on_ws_message), NULL);
     g_signal_connect(conn, "closed",  G_CALLBACK(on_ws_closed),  NULL);
     /* مزامنة مبدئية */
@@ -536,14 +533,16 @@ static SoupServer *g_soup_server = NULL;
 void vlink_server_start(int port) {
     GError *err = NULL;
 
-    /* ── المرحلة 2: تهيئة جسر الإشعارات ── */
+    /* ── المرحلة 2: جسر الإشعارات ── */
     notif_bridge_init(on_notif_action, NULL);
+
+    /* ── المرحلة 3: التحكم عن بُعد ── */
+    input_ctrl_init();
 
     g_soup_server = soup_server_new(NULL, NULL);
     soup_server_add_handler(g_soup_server, NULL, http_handler, NULL, NULL);
     soup_server_add_websocket_handler(g_soup_server, "/ws", NULL, NULL,
                                       on_ws_connected, NULL, NULL);
-    /* فحص دوري كل 300ms */
     g_timeout_add(300, poll_shared_state, NULL);
     if (!soup_server_listen_all(g_soup_server, port, 0, &err)) {
         g_printerr("[VLink] ❌ Failed to start server: %s\n",
@@ -554,10 +553,14 @@ void vlink_server_start(int port) {
     char *ip = get_local_ip();
     g_print("[VLink] 🚀 Server ready on http://%s:%d\n", ip, port);
     g_print("[VLink] 📡 WebSocket on ws://%s:%d/ws\n", ip, port);
-    g_print("[VLink] 🔔 Notification bridge active (Phase 2)\n");
+    g_print("[VLink] 🔔 Notification bridge   [Phase 2 ✅]\n");
+    g_print("[VLink] 🎮 Input controller      [Phase 3 %s]\n",
+            input_ctrl_is_available() ? "✅" : "⚠️  /dev/uinput not writable");
 }
 
 void vlink_server_stop(void) {
+    screen_mirror_stop();
+    input_ctrl_cleanup();
     notif_bridge_cleanup();
     if (g_soup_server) {
         soup_server_disconnect(g_soup_server);
@@ -565,6 +568,7 @@ void vlink_server_stop(void) {
         g_soup_server = NULL;
     }
 }
+
 
 gchar *vlink_server_get_qr_url(int port) {
     char *ip = get_local_ip();

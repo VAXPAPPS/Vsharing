@@ -1,4 +1,5 @@
 #include "window.h"
+#include "screen_viewer.h"
 #include <avahi-client/client.h>
 #include <avahi-client/lookup.h>
 #include <avahi-glib/glib-watch.h>
@@ -443,9 +444,69 @@ vsharing_window_create (GtkApplication *app)
     GtkWidget *settings_btn = gtk_button_new_from_icon_name ("applications-system-symbolic");
     gtk_widget_add_css_class (settings_btn, "flat-btn");
     
+    /* ── زر مشاركة الشاشة (المرحلة 3) ── */
+    GtkWidget *mirror_btn = gtk_toggle_button_new();
+    gtk_widget_set_tooltip_text(mirror_btn, "مشاركة الشاشة");
+    GtkWidget *mirror_icon = gtk_image_new_from_icon_name("video-display-symbolic");
+    gtk_button_set_child(GTK_BUTTON(mirror_btn), mirror_icon);
+    gtk_widget_add_css_class(mirror_btn, "flat-btn");
+    gtk_widget_add_css_class(mirror_btn, "screen-mirror-btn");
+
+    /* نافذة عرض شاشة الهاتف */
+    GtkWidget *mirror_win = gtk_window_new();
+    gtk_window_set_transient_for(GTK_WINDOW(mirror_win), GTK_WINDOW(window));
+    gtk_window_set_title(GTK_WINDOW(mirror_win), "شاشة الهاتف — VaxpLink");
+    gtk_window_set_default_size(GTK_WINDOW(mirror_win), 400, 720);
+    gtk_widget_add_css_class(mirror_win, "mirror-window");
+
+    GtkWidget *mirror_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_set_margin_top(mirror_vbox, 8);
+    gtk_widget_set_margin_bottom(mirror_vbox, 8);
+    gtk_widget_set_margin_start(mirror_vbox, 8);
+    gtk_widget_set_margin_end(mirror_vbox, 8);
+
+    /* شريط التحكم */
+    GtkWidget *ctrl_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *stop_btn = gtk_button_new_with_label("■  إيقاف");
+    gtk_widget_add_css_class(stop_btn, "mirror-stop-btn");
+    GtkWidget *kf_btn   = gtk_button_new_with_label("↺  إطار مرجعي");
+    gtk_widget_add_css_class(kf_btn, "mirror-kf-btn");
+    GtkWidget *stats_lbl = gtk_label_new("جاهز");
+    gtk_widget_add_css_class(stats_lbl, "mirror-stats");
+    gtk_widget_set_hexpand(stats_lbl, TRUE);
+    gtk_box_append(GTK_BOX(ctrl_bar), stop_btn);
+    gtk_box_append(GTK_BOX(ctrl_bar), kf_btn);
+    gtk_box_append(GTK_BOX(ctrl_bar), stats_lbl);
+
+    /* widget عرض الفيديو */
+    GtkWidget *viewer = screen_viewer_new();
+    gtk_widget_set_vexpand(viewer, TRUE);
+    gtk_widget_set_hexpand(viewer, TRUE);
+
+    gtk_box_append(GTK_BOX(mirror_vbox), ctrl_bar);
+    gtk_box_append(GTK_BOX(mirror_vbox), viewer);
+    gtk_window_set_child(GTK_WINDOW(mirror_win), mirror_vbox);
+
+    /* منطق زر مشاركة الشاشة: تبديل حالة toggle */
+    g_signal_connect_swapped(mirror_btn, "toggled",
+        G_CALLBACK(gtk_window_present), mirror_win);
+
+    /* إيقاف البث */
+    g_signal_connect_swapped(stop_btn, "clicked",
+        G_CALLBACK(screen_viewer_stop), NULL);
+
+    /* طلب I-frame */
+    g_signal_connect_swapped(kf_btn, "clicked",
+        G_CALLBACK(screen_viewer_request_keyframe), NULL);
+
+    /* تحديث إحصائيات كل ثانية */
+    g_timeout_add_seconds(1, (GSourceFunc)(void(*)(void))gtk_widget_queue_draw, viewer);
+
+
+    gtk_box_append(GTK_BOX(right_box), mirror_btn);
     gtk_box_append(GTK_BOX(right_box), pair_btn);
     gtk_box_append(GTK_BOX(right_box), settings_btn);
-    
+
     gtk_center_box_set_end_widget (GTK_CENTER_BOX (header), right_box);
     
     gtk_box_append (GTK_BOX (main_box), header);

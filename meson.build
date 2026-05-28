@@ -14,6 +14,13 @@ qrencode     = dependency('libqrencode',  required: false)
 soup_dep     = dependency('libsoup-3.0',  required: false)
 thread_dep   = dependency('threads')
 
+# ── المرحلة 3: FFmpeg + X11 ──
+avcodec_dep  = dependency('libavcodec',  required: true)
+avutil_dep   = dependency('libavutil',   required: true)
+avformat_dep = dependency('libavformat', required: false)
+swscale_dep  = dependency('libswscale',  required: true)
+x11_dep      = dependency('x11',         required: true)
+
 common_args = ['-DVLINK_VERSION_STR="2.0.0"']
 
 # ══════════════════════════════════════════
@@ -28,8 +35,13 @@ executable('vsharingd',
     'src/daemon/auth_manager.c',
     'src/daemon/clipboard_engine.c',
     'src/daemon/notification_bridge.c',   # ← المرحلة 2
+    'src/daemon/input_controller.c',      # ← المرحلة 3
+    'src/daemon/screen_mirror.c',         # ← المرحلة 3
   ]),
-  dependencies : [gio_dep, avahi_client, avahi_glib, soup_dep, thread_dep],
+  dependencies : [
+    gio_dep, avahi_client, avahi_glib, soup_dep, thread_dep,
+    avcodec_dep, avutil_dep, swscale_dep, x11_dep,          # ← المرحلة 3
+  ],
   c_args       : common_args,
   install      : true,
 )
@@ -41,11 +53,16 @@ executable('vsharing-ui',
   files([
     'src/ui/main.c',
     'src/ui/window.c',
+    'src/ui/screen_viewer.c',             # ← المرحلة 3
   ]),
-  dependencies : [gtk_dep, gio_dep, avahi_client, avahi_glib, qrencode, thread_dep],
+  dependencies : [
+    gtk_dep, gio_dep, avahi_client, avahi_glib, qrencode, thread_dep,
+    avcodec_dep, avutil_dep, swscale_dep,                    # ← المرحلة 3
+  ],
   c_args       : common_args,
   install      : true,
 )
+
 
 # ══════════════════════════════════════════
 # Data

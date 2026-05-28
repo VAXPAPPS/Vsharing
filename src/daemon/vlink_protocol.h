@@ -277,3 +277,201 @@ GBytes *vlink_make_notif(uint32_t seq, const VLinkNotifPayload *notif);
 GBytes *vlink_make_auth_req(uint32_t seq, const VLinkAuthPayload *auth);
 GBytes *vlink_make_caps(uint32_t seq, uint32_t caps);
 GBytes *vlink_make_error(uint32_t seq, uint8_t code, const char *message);
+
+/* ============================================================
+ * ── المرحلة 4: VFS Bridge (نظام الملفات الافتراضي) ──
+ *
+ * يستخدم VLINK_FILE_LIST_REQ  (0x36) كـ "VFS_RPC_REQUEST"
+ * ويستخدم VLINK_FILE_LIST_RESP (0x37) كـ "VFS_RPC_RESPONSE"
+ * يستخدم VLINK_FILE_READ_REQ  (0x38) كـ "VFS_WRITE_REQUEST"
+ * يستخدم VLINK_FILE_READ_RESP (0x39) كـ "VFS_WRITE_RESPONSE"
+ *
+ * بروتوكول VFS RPC ثنائي الاتجاه:
+ *   PC  →  Phone : VLINK_FILE_LIST_REQ  + VfsRpcRequest
+ *   Phone → PC   : VLINK_FILE_LIST_RESP + VfsRpcResponse
+ *   PC  →  Phone : VLINK_FILE_READ_REQ  + VfsWriteRequest
+ *   Phone → PC   : VLINK_FILE_READ_RESP + VfsWriteResponse
+ *
+ * كل عملية تحمل req_id فريداً لربط الطلب بالاستجابة
+ * ============================================================ */
+
+/* ──────────────────────────────────────
+ * أكواد عمليات VFS
+ * ────────────────────────────────────── */
+typedef enum {
+    VFS_OP_STAT      = 0x01,   /* الحصول على معلومات ملف/مجلد */
+    VFS_OP_READDIR   = 0x02,   /* قراءة محتوى مجلد */
+    VFS_OP_OPEN      = 0x03,   /* فتح ملف */
+    VFS_OP_READ      = 0x04,   /* قراءة بيانات من ملف */
+    VFS_OP_WRITE     = 0x05,   /* كتابة بيانات في ملف */
+    VFS_OP_CREATE    = 0x06,   /* إنشاء ملف جديد */
+    VFS_OP_UNLINK    = 0x07,   /* حذف ملف */
+    VFS_OP_MKDIR     = 0x08,   /* إنشاء مجلد */
+    VFS_OP_RMDIR     = 0x09,   /* حذف مجلد */
+    VFS_OP_RENAME    = 0x0A,   /* إعادة تسمية */
+    VFS_OP_STATFS    = 0x0B,   /* معلومات نظام الملفات */
+    VFS_OP_TRUNCATE  = 0x0C,   /* تغيير حجم ملف */
+    VFS_OP_CLOSE     = 0x0D,   /* إغلاق ملف */
+} VfsOpCode;
+
+/* ──────────────────────────────────────
+ * أكواد أخطاء VFS (مُعيَّرة على errno)
+ * ────────────────────────────────────── */
+typedef enum {
+    VFS_OK          =  0,    /* نجاح */
+    VFS_ENOENT      = -2,    /* الملف/المجلد غير موجود */
+    VFS_EACCES      = -13,   /* لا صلاحية للوصول */
+    VFS_EEXIST      = -17,   /* الملف موجود مسبقاً */
+    VFS_ENOTDIR     = -20,   /* ليس مجلداً */
+    VFS_EISDIR      = -21,   /* هو مجلد */
+    VFS_EINVAL      = -22,   /* معامل غير صالح */
+    VFS_ENOSPC      = -28,   /* لا مساحة كافية */
+    VFS_EROFS       = -30,   /* نظام ملفات للقراءة فقط */
+    VFS_ENAMETOOLONG= -36,   /* اسم الملف طويل جداً */
+    VFS_ENOTEMPTY   = -39,   /* المجلد غير فارغ */
+    VFS_ENODEV      = -19,   /* الجهاز غير متصل */
+    VFS_ETIMEOUT    = -110,  /* انتهت المهلة الزمنية */
+    VFS_EIO         = -5,    /* خطأ إدخال/إخراج */
+} VfsErrorCode;
+
+/* ──────────────────────────────────────
+ * هيكل رأس طلب VFS RPC (8 + 2 bytes = 10 bytes)
+ * ────────────────────────────────────── */
+#pragma pack(push, 1)
+typedef struct {
+    uint64_t req_id;    /* معرّف فريد للطلب (لربطه بالاستجابة) */
+    uint8_t  op;        /* VfsOpCode */
+    uint8_t  flags;     /* أعلام العملية (0 = عادي) */
+    /* يتبع: بيانات العملية (op-specific) */
+} VfsRpcHeader;
+
+/* هيكل رأس استجابة VFS RPC (8 + 4 bytes = 12 bytes) */
+typedef struct {
+    uint64_t req_id;    /* نفس req_id من الطلب */
+    int32_t  error;     /* VfsErrorCode (0 = نجاح) */
+    /* يتبع: بيانات الاستجابة (op-specific) */
+} VfsRpcRespHeader;
+
+/* ──────────────────────────────────────
+ * بنية معلومات الملف (STAT)
+ * ────────────────────────────────────── */
+typedef struct {
+    uint64_t  file_size;      /* حجم الملف بالبايت */
+    uint32_t  mode;           /* نوع الملف + صلاحيات Unix */
+    uint32_t  uid;            /* معرّف المالك */
+    uint32_t  gid;            /* معرّف المجموعة */
+    uint32_t  nlink;          /* عدد الروابط الصلبة */
+    int64_t   atime_sec;      /* آخر وصول (ثواني Unix) */
+    int64_t   mtime_sec;      /* آخر تعديل */
+    int64_t   ctime_sec;      /* آخر تغيير للبيانات الوصفية */
+    uint32_t  blksize;        /* حجم الكتلة المفضل */
+    uint64_t  blocks;         /* عدد الكتل المخصصة (512-byte) */
+} VfsStatInfo;
+
+/* ──────────────────────────────────────
+ * إدخال دليل واحد في READDIR
+ * ────────────────────────────────────── */
+typedef struct {
+    uint64_t  file_size;      /* حجم الملف */
+    uint32_t  mode;           /* النوع والصلاحيات */
+    int64_t   mtime_sec;      /* تاريخ التعديل */
+    uint16_t  name_len;       /* طول اسم الملف بالبايت */
+    uint8_t   file_type;      /* 0=Unknown 1=Regular 2=Dir 3=Link 4=Other */
+    /* يتبع: name_len bytes من اسم الملف (بدون null terminator) */
+} VfsDirEntry;
+
+/* ──────────────────────────────────────
+ * معاملات عملية READ
+ * ────────────────────────────────────── */
+typedef struct {
+    uint64_t  offset;         /* البداية بالبايت */
+    uint32_t  length;         /* عدد البايتات المطلوب */
+    uint32_t  path_len;       /* طول المسار */
+    /* يتبع: path_len bytes من المسار */
+} VfsReadParams;
+
+/* ──────────────────────────────────────
+ * معاملات عملية WRITE
+ * ────────────────────────────────────── */
+typedef struct {
+    uint64_t  offset;         /* موضع الكتابة */
+    uint32_t  data_len;       /* حجم البيانات للكتابة */
+    uint32_t  path_len;       /* طول المسار */
+    /* يتبع: path_len bytes مسار + data_len bytes بيانات */
+} VfsWriteParams;
+
+/* ──────────────────────────────────────
+ * معاملات عملية RENAME
+ * ────────────────────────────────────── */
+typedef struct {
+    uint32_t  old_path_len;   /* طول المسار القديم */
+    uint32_t  new_path_len;   /* طول المسار الجديد */
+    uint32_t  flags;          /* أعلام RENAME_* */
+    /* يتبع: old_path_len bytes + new_path_len bytes */
+} VfsRenameParams;
+
+/* ──────────────────────────────────────
+ * معلومات نظام الملفات (STATFS)
+ * ────────────────────────────────────── */
+typedef struct {
+    uint64_t  total_bytes;    /* إجمالي سعة التخزين */
+    uint64_t  free_bytes;     /* المساحة الحرة */
+    uint64_t  avail_bytes;    /* المساحة المتاحة للمستخدم */
+    uint32_t  total_files;    /* إجمالي inodes */
+    uint32_t  free_files;     /* inodes الحرة */
+    uint32_t  block_size;     /* حجم الكتلة */
+    uint32_t  name_max;       /* أقصى طول لاسم ملف */
+} VfsStatfsData;
+
+/* ──────────────────────────────────────
+ * معاملات CREATE / MKDIR
+ * ────────────────────────────────────── */
+typedef struct {
+    uint32_t  mode;           /* صلاحيات Unix (e.g. 0644) */
+    uint32_t  path_len;       /* طول المسار */
+    /* يتبع: path_len bytes من المسار */
+} VfsCreateParams;
+
+/* ──────────────────────────────────────
+ * استجابة عملية READ
+ * ────────────────────────────────────── */
+typedef struct {
+    uint32_t  bytes_read;     /* البايتات المُعادة فعلياً */
+    /* يتبع: bytes_read bytes من البيانات */
+} VfsReadResponse;
+
+/* ──────────────────────────────────────
+ * استجابة عملية WRITE
+ * ────────────────────────────────────── */
+typedef struct {
+    uint32_t  bytes_written;  /* البايتات المكتوبة فعلياً */
+} VfsWriteResponse;
+
+#pragma pack(pop)
+
+/* ──────────────────────────────────────
+ * أقصى حجم مسموح به لمسار VFS
+ * ────────────────────────────────────── */
+#define VFS_MAX_PATH      4096
+#define VFS_MAX_NAME      255
+#define VFS_REQUEST_TIMEOUT_MS  8000   /* 8 ثوان timeout لكل طلب VFS */
+#define VFS_DIR_CACHE_TTL_MS    5000   /* صلاحية cache المجلدات (5 ثوان) */
+#define VFS_ATTR_CACHE_TTL_MS   2000   /* صلاحية cache الخصائص (2 ثانية) */
+#define VFS_CACHE_MAX_ENTRIES   512    /* حد LRU لـ cache */
+
+/* فئات أنواع الملفات (تُستخدم في VfsDirEntry.file_type) */
+#define VFS_FT_UNKNOWN    0
+#define VFS_FT_REGULAR    1
+#define VFS_FT_DIRECTORY  2
+#define VFS_FT_SYMLINK    3
+#define VFS_FT_OTHER      4
+
+/* بناء إطار VFS RPC للإرسال */
+GBytes *vlink_make_vfs_request(uint64_t req_id, VfsOpCode op,
+                                const uint8_t *op_payload,
+                                uint32_t op_payload_len,
+                                const char *path);
+GBytes *vlink_make_vfs_response(uint64_t req_id, int32_t error,
+                                 const uint8_t *resp_data,
+                                 uint32_t resp_data_len);
+

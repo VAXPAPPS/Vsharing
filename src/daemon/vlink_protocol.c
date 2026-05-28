@@ -187,3 +187,113 @@ GBytes *vlink_make_error(uint32_t seq, uint8_t code, const char *message) {
     return vlink_build_frame(VLINK_ERROR, VLINK_FLAG_NONE, seq,
                               (uint8_t *)buf, (uint32_t)len);
 }
+
+/* ============================================================
+ * المرحلة 4: بُناة إطارات VFS RPC
+ *
+ * تنسيق حمولة VLINK_FILE_LIST_REQ (VFS Request):
+ *   [VfsRpcHeader 10 bytes][op_payload bytes][path bytes]
+ *
+ * تنسيق حمولة VLINK_FILE_LIST_RESP (VFS Response):
+ *   [VfsRpcRespHeader 12 bytes][resp_data bytes]
+ * ============================================================ */
+
+/**
+ * vlink_make_vfs_request:
+ * @req_id:        معرّف فريد يُستخدم لربط الطلب بالاستجابة
+ * @op:            كود العملية (VfsOpCode)
+ * @op_payload:    بيانات إضافية خاصة بالعملية (يمكن أن تكون NULL)
+ * @op_payload_len: حجم op_payload بالبايت
+ * @path:          مسار الملف/المجلد الهدف (يمكن أن يكون NULL لعمليات مثل STATFS)
+ *
+ * يُعيد GBytes* يحتوي على إطار VLink كامل، أو NULL عند الخطأ.
+ * المستدعي مسؤول عن استدعاء g_bytes_unref() على النتيجة.
+ */
+GBytes *vlink_make_vfs_request(uint64_t req_id, VfsOpCode op,
+                                const uint8_t *op_payload,
+                                uint32_t op_payload_len,
+                                const char *path)
+{
+    uint32_t path_len = path ? (uint32_t)strlen(path) : 0;
+
+    /* احسب الحجم الإجمالي: header + op_payload + path */
+    uint32_t total = sizeof(VfsRpcHeader) + op_payload_len + path_len;
+
+    if (total > VLINK_MAX_PAYLOAD) {
+        g_warning("[VFS] Request payload too large: %u bytes (max=%u)",
+                  total, VLINK_MAX_PAYLOAD);
+        return NULL;
+    }
+
+    uint8_t *buf = g_malloc0(total);
+    if (!buf) return NULL;
+
+    /* رأس الطلب */
+    VfsRpcHeader *hdr = (VfsRpcHeader *)buf;
+    hdr->req_id = GUINT64_TO_BE(req_id);
+    hdr->op     = (uint8_t)op;
+    hdr->flags  = 0;
+
+    uint8_t *cursor = buf + sizeof(VfsRpcHeader);
+
+    /* البيانات الخاصة بالعملية */
+    if (op_payload && op_payload_len > 0) {
+        memcpy(cursor, op_payload, op_payload_len);
+        cursor += op_payload_len;
+    }
+
+    /* المسار */
+    if (path && path_len > 0) {
+        memcpy(cursor, path, path_len);
+    }
+
+    GBytes *frame = vlink_build_frame(
+        VLINK_FILE_LIST_REQ,   /* نستخدمه كـ VFS_RPC_REQUEST */
+        VLINK_FLAG_PRIORITY,   /* أولوية عالية لضمان سرعة الاستجابة */
+        0,                     /* seq = 0 (req_id يُغني عنه هنا) */
+        buf, total
+    );
+    g_free(buf);
+    return frame;
+}
+
+/**
+ * vlink_make_vfs_response:
+ * @req_id:      نفس req_id من الطلب الأصلي
+ * @error:       رمز الخطأ (0 = نجاح، سالب = VfsErrorCode)
+ * @resp_data:   بيانات الاستجابة الخاصة بالعملية (يمكن أن تكون NULL)
+ * @resp_data_len: حجم resp_data بالبايت
+ *
+ * يُعيد إطار VLink كاملاً لإرسال الاستجابة للجهاز.
+ */
+GBytes *vlink_make_vfs_response(uint64_t req_id, int32_t error,
+                                 const uint8_t *resp_data,
+                                 uint32_t resp_data_len)
+{
+    uint32_t total = sizeof(VfsRpcRespHeader) + resp_data_len;
+
+    if (total > VLINK_MAX_PAYLOAD) {
+        g_warning("[VFS] Response payload too large: %u bytes", total);
+        return NULL;
+    }
+
+    uint8_t *buf = g_malloc0(total);
+    if (!buf) return NULL;
+
+    VfsRpcRespHeader *hdr = (VfsRpcRespHeader *)buf;
+    hdr->req_id = GUINT64_TO_BE(req_id);
+    hdr->error  = (int32_t)GUINT32_TO_BE((uint32_t)error);
+
+    if (resp_data && resp_data_len > 0)
+        memcpy(buf + sizeof(VfsRpcRespHeader), resp_data, resp_data_len);
+
+    GBytes *frame = vlink_build_frame(
+        VLINK_FILE_LIST_RESP,  /* VFS_RPC_RESPONSE */
+        VLINK_FLAG_NONE,
+        0,
+        buf, total
+    );
+    g_free(buf);
+    return frame;
+}
+

@@ -31,10 +31,11 @@
  * @client_ip:   عنوان IP الهاتف المُستقبِل
  * @fps:         معدل الإطارات (10, 15, 30)
  * @bitrate:     معدل البت بالـ bits/s
+ * @crypto_key:  مفتاح التشفير (32 بايت) أو NULL للتعطيل (المرحلة 5)
  * يبدأ thread منفصلاً يلتقط الشاشة ويُشفّرها ويُرسلها.
  * يُعيد TRUE عند النجاح.
  */
-gboolean screen_mirror_start(const char *client_ip, int fps, int bitrate);
+gboolean screen_mirror_start(const char *client_ip, int fps, int bitrate, const uint8_t *crypto_key);
 
 /**
  * screen_mirror_stop:

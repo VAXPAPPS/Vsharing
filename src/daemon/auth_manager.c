@@ -80,6 +80,46 @@ static char *get_config_path(void) {
 }
 
 /* ============================================================
+ * إنشاء وإدارة شهادات TLS (المرحلة 5)
+ * ============================================================ */
+
+gboolean vlink_auth_ensure_tls_cert(char **out_cert_path, char **out_key_path) {
+    const char *config_dir = g_get_user_config_dir();
+    char *vsharing_dir = g_build_filename(config_dir, "vsharing", NULL);
+    g_mkdir_with_parents(vsharing_dir, 0700);
+
+    char *cert_path = g_build_filename(vsharing_dir, "server_cert.pem", NULL);
+    char *key_path  = g_build_filename(vsharing_dir, "server_key.pem", NULL);
+    g_free(vsharing_dir);
+
+    if (g_file_test(cert_path, G_FILE_TEST_EXISTS) && g_file_test(key_path, G_FILE_TEST_EXISTS)) {
+        if (out_cert_path) *out_cert_path = cert_path; else g_free(cert_path);
+        if (out_key_path)  *out_key_path  = key_path;  else g_free(key_path);
+        return TRUE;
+    }
+
+    g_print("[Auth] 🔐 Generating new self-signed TLS certificate...\n");
+    char *cmd = g_strdup_printf(
+        "openssl req -x509 -newkey rsa:2048 -nodes -keyout \"%s\" -out \"%s\" -days 3650 -subj \"/CN=VaxpLink Server\"",
+        key_path, cert_path
+    );
+
+    int ret = system(cmd);
+    g_free(cmd);
+
+    if (ret != 0) {
+        g_warning("[Auth] ❌ Failed to generate TLS certificate");
+        g_free(cert_path);
+        g_free(key_path);
+        return FALSE;
+    }
+
+    if (out_cert_path) *out_cert_path = cert_path; else g_free(cert_path);
+    if (out_key_path)  *out_key_path  = key_path;  else g_free(key_path);
+    return TRUE;
+}
+
+/* ============================================================
  * تحميل / حفظ الأجهزة الموثوقة (JSON عبر GLib)
  * ============================================================ */
 

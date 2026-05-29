@@ -7,6 +7,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <gnutls/gnutls.h>
+#include <gnutls/crypto.h>
 
 /* FFmpeg */
 #include <libavcodec/avcodec.h>
@@ -52,6 +54,11 @@ typedef struct {
     uint64_t bytes_sent;
     gboolean need_keyframe;
     uint32_t frame_id;
+
+    /* التشفير (المرحلة 5) */
+    gboolean use_crypto;
+    uint8_t  crypto_key[32];
+    gnutls_aead_cipher_hd_t cipher_hd;
 
 } ScreenMirrorCtx;
 
@@ -172,11 +179,37 @@ static void send_frame_packet(const uint8_t *data, int size, gboolean is_keyfram
     sf.is_keyframe  = is_keyframe ? 1 : 0;
     sf.data_len     = (uint32_t)size;
 
-    /* نُجمع header + بيانات H.264 في مخزن واحد */
-    int total = sizeof(sf) + size;
-    uint8_t *buf = g_malloc(total);
-    memcpy(buf, &sf, sizeof(sf));
-    memcpy(buf + sizeof(sf), data, size);
+    int total;
+    uint8_t *buf;
+
+    if (g_ctx.use_crypto) {
+        /* AES-256-GCM: IV = 12 bytes, Tag = 16 bytes */
+        uint8_t iv[12] = {0};
+        memcpy(iv, &sf.frame_id, sizeof(sf.frame_id)); // Simple IV based on frame_id
+
+        size_t ciphertext_size = size + 16;
+        total = sizeof(sf) + 12 + ciphertext_size;
+        buf = g_malloc(total);
+
+        /* Copy Header */
+        memcpy(buf, &sf, sizeof(sf));
+        /* Copy IV */
+        memcpy(buf + sizeof(sf), iv, 12);
+        
+        /* Encrypt data (AAD = header + IV) */
+        size_t c_size = ciphertext_size;
+        gnutls_aead_cipher_encrypt(g_ctx.cipher_hd, iv, 12,
+                                   buf, sizeof(sf) + 12, /* AAD */
+                                   16, /* tag size */
+                                   data, size,
+                                   buf + sizeof(sf) + 12, &c_size);
+        /* Note: data_len in header remains original size, receiver will expect +16 for tag */
+    } else {
+        total = sizeof(sf) + size;
+        buf = g_malloc(total);
+        memcpy(buf, &sf, sizeof(sf));
+        memcpy(buf + sizeof(sf), data, size);
+    }
 
     /* نُجزّئ إذا تجاوز حد UDP (65507 bytes) */
     int max_chunk = 60000;
@@ -280,7 +313,7 @@ static gpointer mirror_thread_func(gpointer data) {
  * الواجهة العامة
  * ============================================================ */
 
-gboolean screen_mirror_start(const char *client_ip, int fps, int bitrate) {
+gboolean screen_mirror_start(const char *client_ip, int fps, int bitrate, const uint8_t *crypto_key) {
     if (g_ctx.running) {
         g_print("[ScreenMirror] ⚠️  Already running\n");
         return TRUE;
@@ -293,6 +326,16 @@ gboolean screen_mirror_start(const char *client_ip, int fps, int bitrate) {
     g_strlcpy(g_ctx.client_ip, client_ip, sizeof(g_ctx.client_ip));
     g_ctx.fps     = (fps     > 0) ? fps     : SCREEN_DEFAULT_FPS;
     g_ctx.bitrate = (bitrate > 0) ? bitrate : SCREEN_DEFAULT_BITRATE;
+
+    if (crypto_key) {
+        memcpy(g_ctx.crypto_key, crypto_key, 32);
+        g_ctx.use_crypto = TRUE;
+        gnutls_datum_t key_datum = { g_ctx.crypto_key, 32 };
+        if (gnutls_aead_cipher_init(&g_ctx.cipher_hd, GNUTLS_CIPHER_AES_256_GCM, &key_datum) < 0) {
+            g_printerr("[ScreenMirror] ❌ Failed to init GnuTLS AEAD cipher\n");
+            return FALSE;
+        }
+    }
 
     if (!init_x11()     ||
         !init_encoder() ||
@@ -323,6 +366,11 @@ void screen_mirror_stop(void) {
     if (g_ctx.enc_ctx) {
         avcodec_send_frame(g_ctx.enc_ctx, NULL);  /* flush */
         avcodec_free_context(&g_ctx.enc_ctx);
+    }
+    
+    if (g_ctx.use_crypto) {
+        gnutls_aead_cipher_deinit(g_ctx.cipher_hd);
+        g_ctx.use_crypto = FALSE;
     }
     if (g_ctx.frame_yuv) {
         av_freep(&g_ctx.frame_yuv->data[0]);

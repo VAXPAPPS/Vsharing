@@ -24,7 +24,10 @@ x11_dep      = dependency('x11',         required: true)
 # ── المرحلة 4: VFS Bridge ──
 fuse3_dep    = dependency('fuse3',       required: true)
 
-common_args = ['-DVLINK_VERSION_STR="3.0.0"']
+# ── المرحلة 5: التشفير (TLS + Crypto) ──
+gnutls_dep   = dependency('gnutls',      required: true)
+
+common_args = ['-DVLINK_VERSION_STR="5.0.0"']
 
 # ══════════════════════════════════════════
 # Daemon (vsharingd)
@@ -46,6 +49,7 @@ executable('vsharingd',
     gio_dep, avahi_client, avahi_glib, soup_dep, thread_dep,
     avcodec_dep, avutil_dep, swscale_dep, x11_dep,          # ← المرحلة 3
     fuse3_dep,                                              # ← المرحلة 4
+    gnutls_dep,                                             # ← المرحلة 5
   ],
   c_args       : common_args,
   install      : true,
@@ -63,6 +67,7 @@ executable('vsharing-ui',
   dependencies : [
     gtk_dep, gio_dep, avahi_client, avahi_glib, qrencode, thread_dep,
     avcodec_dep, avutil_dep, swscale_dep,                    # ← المرحلة 3
+    gnutls_dep,                                              # ← المرحلة 5
   ],
   c_args       : common_args,
   install      : true,

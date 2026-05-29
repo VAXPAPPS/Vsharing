@@ -119,3 +119,13 @@ GList *vlink_auth_get_all_devices(VLinkAuthManager *mgr);
  * يجب تحرير النص المُعاد بـ g_free.
  */
 gchar *vlink_auth_get_server_public_key_b64(VLinkAuthManager *mgr);
+
+/**
+ * vlink_auth_ensure_tls_cert:
+ * يتأكد من وجود شهادة TLS ذاتية التوقيع في مسار إعدادات Vsharing،
+ * أو يُنشئها باستخدام openssl إذا لم تكن موجودة.
+ * يُعيد مسارات الشهادة والمفتاح الخاص في out_cert_path و out_key_path.
+ * يجب تحرير المسارات باستخدام g_free.
+ */
+gboolean vlink_auth_ensure_tls_cert(char **out_cert_path, char **out_key_path);
+

@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include "auth_manager.h"
 
 /* ── HTML واجهة الهاتف المحسّنة ── */
 static const char *MOBILE_HTML =
@@ -152,6 +153,7 @@ static GPtrArray *g_clients      = NULL;
 static char g_last_pc_clip[8192] = {0};
 static char g_last_file[4096]    = {0};
 static char g_last_client_ip[46] = {0};  /* ← IP آخر جهاز متصل */
+static uint8_t g_stream_key[32]  = {0};  /* مفتاح التشفير للبث (المرحلة 5) */
 
 
 /* ── بث رسالة نصية لجميع عملاء WebSocket ── */
@@ -268,7 +270,7 @@ static void on_ws_message(SoupWebsocketConnection *conn, gint type,
                 if (cfg->bitrate) bitrate = (int)cfg->bitrate;
             }
             const char *cip = g_last_client_ip[0] ? g_last_client_ip : "127.0.0.1";
-            if (!screen_mirror_start(cip, fps, bitrate))
+            if (!screen_mirror_start(cip, fps, bitrate, g_stream_key))
                 g_print("[VLink] ❌ screen_mirror_start failed\n");
             break;
         }
@@ -282,7 +284,7 @@ static void on_ws_message(SoupWebsocketConnection *conn, gint type,
                 const VLinkScreenConfig *cfg = (const VLinkScreenConfig *)payload;
                 screen_mirror_stop();
                 const char *ip2 = g_last_client_ip[0] ? g_last_client_ip : "127.0.0.1";
-                screen_mirror_start(ip2, cfg->fps, (int)cfg->bitrate);
+                screen_mirror_start(ip2, cfg->fps, (int)cfg->bitrate, g_stream_key);
             }
             break;
 
@@ -563,20 +565,55 @@ void vlink_server_start(int port) {
     /* ── المرحلة 4: نظام الملفات الافتراضي ── */
     vfs_bridge_init(vfs_send_frame_cb, NULL);
 
-    g_soup_server = soup_server_new(NULL, NULL);
+    /* ── المرحلة 5: التشفير (TLS 1.3) ── */
+    char *cert_path = NULL, *key_path = NULL;
+    vlink_auth_ensure_tls_cert(&cert_path, &key_path);
+    GTlsCertificate *tls_cert = NULL;
+    if (cert_path && key_path) {
+        GError *tls_err = NULL;
+        tls_cert = g_tls_certificate_new_from_files(cert_path, key_path, &tls_err);
+        if (!tls_cert) {
+            g_warning("[VLink] Failed to load TLS cert: %s", tls_err->message);
+            g_error_free(tls_err);
+        }
+    }
+    g_free(cert_path);
+    g_free(key_path);
+
+    /* توليد مفتاح جلسة عشوائي لبث الفيديو */
+    for (int i = 0; i < 32; i++) {
+        g_stream_key[i] = (uint8_t)g_random_int_range(0, 256);
+    }
+
+    if (tls_cert) {
+        g_soup_server = soup_server_new("tls-certificate", tls_cert, NULL);
+        g_object_unref(tls_cert);
+    } else {
+        g_soup_server = soup_server_new(NULL, NULL);
+    }
+
     soup_server_add_handler(g_soup_server, NULL, http_handler, NULL, NULL);
     soup_server_add_websocket_handler(g_soup_server, "/ws", NULL, NULL,
                                       on_ws_connected, NULL, NULL);
     g_timeout_add(300, poll_shared_state, NULL);
-    if (!soup_server_listen_all(g_soup_server, port, 0, &err)) {
+
+    SoupServerListenOptions listen_opts = tls_cert ? SOUP_SERVER_LISTEN_HTTPS : 0;
+
+    if (!soup_server_listen_all(g_soup_server, port, listen_opts, &err)) {
         g_printerr("[VLink] ❌ Failed to start server: %s\n",
                    err ? err->message : "unknown");
         if (err) g_error_free(err);
         return;
     }
     char *ip = get_local_ip();
-    g_print("[VLink] 🚀 Server ready on http://%s:%d\n", ip, port);
-    g_print("[VLink] 📡 WebSocket on ws://%s:%d/ws\n", ip, port);
+    if (tls_cert) {
+        g_print("[VLink] 🚀 Secure Server ready on https://%s:%d\n", ip, port);
+        g_print("[VLink] 📡 Secure WebSocket on wss://%s:%d/ws\n", ip, port);
+        g_print("[VLink] 🔐 TLS Encryption          [Phase 5 ✅]\n");
+    } else {
+        g_print("[VLink] 🚀 Server ready on http://%s:%d\n", ip, port);
+        g_print("[VLink] 📡 WebSocket on ws://%s:%d/ws\n", ip, port);
+    }
     g_print("[VLink] 🔔 Notification bridge   [Phase 2 ✅]\n");
     g_print("[VLink] 🎮 Input controller      [Phase 3 %s]\n",
             input_ctrl_is_available() ? "✅" : "⚠️  /dev/uinput not writable");

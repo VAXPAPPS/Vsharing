@@ -21,7 +21,10 @@ avformat_dep = dependency('libavformat', required: false)
 swscale_dep  = dependency('libswscale',  required: true)
 x11_dep      = dependency('x11',         required: true)
 
-common_args = ['-DVLINK_VERSION_STR="2.0.0"']
+# ── المرحلة 4: VFS Bridge ──
+fuse3_dep    = dependency('fuse3',       required: true)
+
+common_args = ['-DVLINK_VERSION_STR="3.0.0"']
 
 # ══════════════════════════════════════════
 # Daemon (vsharingd)
@@ -37,10 +40,12 @@ executable('vsharingd',
     'src/daemon/notification_bridge.c',   # ← المرحلة 2
     'src/daemon/input_controller.c',      # ← المرحلة 3
     'src/daemon/screen_mirror.c',         # ← المرحلة 3
+    'src/daemon/vfs_bridge.c',            # ← المرحلة 4
   ]),
   dependencies : [
     gio_dep, avahi_client, avahi_glib, soup_dep, thread_dep,
     avcodec_dep, avutil_dep, swscale_dep, x11_dep,          # ← المرحلة 3
+    fuse3_dep,                                              # ← المرحلة 4
   ],
   c_args       : common_args,
   install      : true,

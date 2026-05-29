@@ -3,6 +3,7 @@
 #include "vlink_protocol.h"
 #include "screen_mirror.h"
 #include "input_controller.h"
+#include "vfs_bridge.h"
 #include <libsoup/soup.h>
 #include <stdio.h>
 #include <string.h>
@@ -175,6 +176,13 @@ static void ws_broadcast_binary(GBytes *frame) {
     }
 }
 
+/* ── Callback: إرسال إطار VFS للهاتف ── */
+static gboolean vfs_send_frame_cb(GBytes *frame, gpointer user_data) {
+    (void)user_data;
+    ws_broadcast_binary(frame);
+    return TRUE;
+}
+
 /* ── Callback: عند نقر المستخدم على إجراء إشعار → نرسل VLink للهاتف ── */
 static void on_notif_action(uint64_t notif_id, uint8_t action_index,
                              const char *action_text, gpointer user_data)
@@ -307,6 +315,12 @@ static void on_ws_message(SoupWebsocketConnection *conn, gint type,
             }
             break;
 
+        /* ── VFS (نظام الملفات الافتراضي) ── */
+        case VLINK_FILE_LIST_RESP:
+        case VLINK_FILE_READ_RESP:
+            vfs_bridge_on_response(hdr.type, payload, hdr.payload_len);
+            break;
+
         /* ── نبضات القلب ── */
         case VLINK_PING: {
             static uint32_t pong_seq = 5000;
@@ -344,6 +358,9 @@ static void on_ws_closed(SoupWebsocketConnection *conn, gpointer user_data) {
     g_ptr_array_remove(g_clients, conn);
     g_object_unref(conn);
     g_print("[VLink] Device disconnected. Active: %u\n", g_clients->len);
+
+    /* إلغاء تركيب VFS عند قطع الاتصال */
+    vfs_bridge_unmount_device("default-device");
 }
 
 static void on_ws_connected(SoupServer *srv, SoupServerMessage *msg,
@@ -379,6 +396,9 @@ static void on_ws_connected(SoupServer *srv, SoupServerMessage *msg,
         g_free(m);
     }
     g_print("[VLink] ✅ New device connected. Active: %u\n", g_clients->len);
+
+    /* بدء تركيب VFS عند اتصال الهاتف */
+    vfs_bridge_mount_device("default-device", "MyPhone");
 }
 
 /* ── فحص دوري لمتغيرات النظام وبثها ── */
@@ -537,7 +557,11 @@ void vlink_server_start(int port) {
     notif_bridge_init(on_notif_action, NULL);
 
     /* ── المرحلة 3: التحكم عن بُعد ── */
+    /* ── المرحلة 3: التحكم عن بُعد ── */
     input_ctrl_init();
+
+    /* ── المرحلة 4: نظام الملفات الافتراضي ── */
+    vfs_bridge_init(vfs_send_frame_cb, NULL);
 
     g_soup_server = soup_server_new(NULL, NULL);
     soup_server_add_handler(g_soup_server, NULL, http_handler, NULL, NULL);
@@ -556,9 +580,11 @@ void vlink_server_start(int port) {
     g_print("[VLink] 🔔 Notification bridge   [Phase 2 ✅]\n");
     g_print("[VLink] 🎮 Input controller      [Phase 3 %s]\n",
             input_ctrl_is_available() ? "✅" : "⚠️  /dev/uinput not writable");
+    g_print("[VLink] 📂 VFS Bridge            [Phase 4 ✅]\n");
 }
 
 void vlink_server_stop(void) {
+    vfs_bridge_cleanup();
     screen_mirror_stop();
     input_ctrl_cleanup();
     notif_bridge_cleanup();
